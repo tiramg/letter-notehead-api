@@ -15,6 +15,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG AUDIVERIS_VERSION=5.11.0
+# Audiveris' Debian post-install script registers a desktop launcher. Minimal
+# containers do not create the XDG system menu directories by default.
+RUN mkdir -p /etc/xdg/menus/applications-merged \
+    /usr/share/applications \
+    /usr/share/desktop-directories
 RUN python3 - <<'PY' > /tmp/audiveris-url
 import json, os, urllib.request
 tag=os.environ.get('AUDIVERIS_VERSION','5.11.0')
