@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: letter-notehead-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: LETTER_NOTEHEAD_API_TOKEN
+        generateValue: true
+    plan: starter
