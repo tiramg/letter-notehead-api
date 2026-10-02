@@ -7,4 +7,4 @@ services:
     envVars:
       - key: LETTER_NOTEHEAD_API_TOKEN
         generateValue: true
-    plan: starter
+    plan: free
