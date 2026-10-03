@@ -77,7 +77,7 @@ class Handler(SimpleHTTPRequestHandler):
             with tempfile.TemporaryDirectory(prefix='letter-notehead-') as td:
                 source=Path(td)/filename; source.write_bytes(item.get_payload(decode=True)); out=Path(td)/'output'; out.mkdir()
                 command=[binary,'-batch','-transcribe','-export','-output',str(out),'--',str(source)]
-                run=subprocess.run(command,capture_output=True,text=True,timeout=180)
+                run=subprocess.run(command,capture_output=True,text=True,timeout=480)
                 # Audiveris writes book outputs in a score-named subfolder
                 # beneath the configured output directory.
                 mxl=next(out.rglob('*.mxl'),None)
@@ -102,7 +102,7 @@ class Handler(SimpleHTTPRequestHandler):
             primary=learning_modes['all']
             data.update({"fileName":filename,"engine":"Audiveris","reviewRequired":True,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
             return self.send_json(200,data)
-        except subprocess.TimeoutExpired: return self.send_json(504,{"error":"Recognition took longer than three minutes."})
+        except subprocess.TimeoutExpired: return self.send_json(504,{"error":"Recognition took longer than eight minutes."})
         except Exception as exc: return self.send_json(400,{"error":str(exc)})
 
 if __name__ == '__main__':
