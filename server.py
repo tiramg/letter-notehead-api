@@ -81,7 +81,10 @@ class Handler(SimpleHTTPRequestHandler):
                 # Audiveris writes book outputs in a score-named subfolder
                 # beneath the configured output directory.
                 mxl=next(out.rglob('*.mxl'),None)
-                if run.returncode or not mxl: raise RuntimeError('Recognition did not produce a score. Try a clearer, straight-on image.')
+                if run.returncode or not mxl:
+                    diagnostic=(run.stderr or run.stdout or 'No diagnostic output').strip()[-6000:]
+                    print(f'Audiveris failed ({run.returncode}) for {filename}:\n{diagnostic}',flush=True)
+                    raise RuntimeError('Recognition did not produce a score. Try a clearer, straight-on image.')
                 data=parse_musicxml(mxl)
                 title=Path(filename).stem.replace('_',' ').replace('-',' ').strip().title()
                 # Preserve the recognized system layout until the correction UI can safely reflow every score.
