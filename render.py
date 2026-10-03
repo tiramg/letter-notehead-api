@@ -19,6 +19,16 @@ def render_pdf(source,destination,binary=None):
     if run.returncode or not destination.exists(): raise RuntimeError('MuseScore could not render this score to PDF.')
     return destination
 
+def render_preview(source,destination):
+    """Render the first PDF page as a phone-friendly PNG preview."""
+    destination=Path(destination); destination.parent.mkdir(parents=True,exist_ok=True)
+    output_root=destination.with_suffix('')
+    binary=shutil.which('pdftoppm')
+    if not binary: raise RuntimeError('pdftoppm is not installed.')
+    run=subprocess.run([binary,'-png','-f','1','-singlefile','-r','150',str(source),str(output_root)],capture_output=True,text=True,timeout=60)
+    if run.returncode or not destination.exists(): raise RuntimeError('The score preview could not be rendered.')
+    return destination
+
 if __name__=='__main__':
     import argparse
     p=argparse.ArgumentParser();p.add_argument('source');p.add_argument('destination');args=p.parse_args()
