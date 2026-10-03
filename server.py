@@ -76,7 +76,7 @@ class Handler(SimpleHTTPRequestHandler):
             if Path(filename).suffix.lower() not in {'.pdf','.png','.jpg','.jpeg','.tif','.tiff'}: raise ValueError('Use a PDF, PNG, JPG, or TIFF file.')
             with tempfile.TemporaryDirectory(prefix='letter-notehead-') as td:
                 source=Path(td)/filename; source.write_bytes(item.get_payload(decode=True)); out=Path(td)/'output'; out.mkdir()
-                command=[binary,'-batch','-transcribe','-export','-output',str(out),'--',str(source)]
+                command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-transcribe','-export','-output',str(out),'--',str(source)]
                 run=subprocess.run(command,capture_output=True,text=True,timeout=480)
                 # Audiveris writes book outputs in a score-named subfolder
                 # beneath the configured output directory.
