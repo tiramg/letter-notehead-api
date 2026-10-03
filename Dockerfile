@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     QT_QPA_PLATFORM=xcb
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl python3 poppler-utils xvfb xauth \
+    ca-certificates curl python3 python3-pil poppler-utils xvfb xauth \
     libasound2t64 libegl1 libgl1 libglib2.0-0 libgtk-3-0t64 libnss3 libopengl0 \
     libx11-xcb1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
     libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 \
