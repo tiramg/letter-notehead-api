@@ -78,7 +78,9 @@ class Handler(SimpleHTTPRequestHandler):
                 source=Path(td)/filename; source.write_bytes(item.get_payload(decode=True)); out=Path(td)/'output'; out.mkdir()
                 command=[binary,'-batch','-transcribe','-export','-output',str(out),'--',str(source)]
                 run=subprocess.run(command,capture_output=True,text=True,timeout=180)
-                mxl=next(out.glob('*.mxl'),None)
+                # Audiveris writes book outputs in a score-named subfolder
+                # beneath the configured output directory.
+                mxl=next(out.rglob('*.mxl'),None)
                 if run.returncode or not mxl: raise RuntimeError('Recognition did not produce a score. Try a clearer, straight-on image.')
                 data=parse_musicxml(mxl)
                 title=Path(filename).stem.replace('_',' ').replace('-',' ').strip().title()
