@@ -20,7 +20,7 @@ def render_pdf(source,destination,binary=None):
     if run.returncode or not destination.exists(): raise RuntimeError('MuseScore could not render this score to PDF.')
     return destination
 
-def render_pages_and_lines(source,output_dir,dpi=120):
+def render_pages_and_lines(source,output_dir,dpi=90):
     """Render every PDF page and crop its musical systems into ordered swipe segments."""
     source=Path(source); output_dir=Path(output_dir); output_dir.mkdir(parents=True,exist_ok=True)
     binary=shutil.which('pdftoppm')
