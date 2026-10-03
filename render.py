@@ -15,7 +15,7 @@ def render_pdf(source,destination,binary=None):
     binary=binary or find_musescore()
     if not binary: raise RuntimeError('MuseScore Studio is not installed or MUSESCORE_BIN is not configured.')
     destination=Path(destination); destination.parent.mkdir(parents=True,exist_ok=True)
-    run=subprocess.run([binary,'-o',str(destination),str(source)],capture_output=True,text=True,timeout=180)
+    run=subprocess.run(['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-o',str(destination),str(source)],capture_output=True,text=True,timeout=180)
     if run.returncode or not destination.exists(): raise RuntimeError('MuseScore could not render this score to PDF.')
     return destination
 
