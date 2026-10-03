@@ -106,6 +106,30 @@ class Handler(SimpleHTTPRequestHandler):
                 worker.start()
                 return self.send_json(202,{"jobId":job_id,"status":"processing"})
             except Exception as exc: return self.send_json(400,{"error":str(exc)})
+        if path == '/api/convert-mode':
+            if not self.authorized(): return self.send_json(401,{"error":"Unauthorized"})
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if length <= 0 or length > 20*1024*1024: raise ValueError('Conversion request is too large.')
+                payload=json.loads(self.rfile.read(length).decode('utf-8'))
+                mode=payload.get('mode')
+                if mode not in {'guide','none'}: raise ValueError('Choose guide or standard notation.')
+                source_bytes=base64.b64decode(payload.get('sourceMxl',''),validate=True)
+                title=str(payload.get('title') or 'Recognized Score')[:200]
+                suffix='fewer-hints' if mode == 'guide' else 'standard'
+                with tempfile.TemporaryDirectory(prefix='letter-notehead-mode-') as td:
+                    source=Path(td)/'source.mxl'; source.write_bytes(source_bytes)
+                    converted=Path(td)/f'{suffix}.mxl'
+                    label_count=convert_mxl(source,converted,title=title,clean_layout=False,label_mode=mode)
+                    result={"labelCount":label_count,"mxl":base64.b64encode(converted.read_bytes()).decode('ascii'),"pdf":None,"preview":None}
+                    renderer=find_musescore()
+                    if renderer:
+                        rendered=Path(td)/f'{suffix}.pdf'; render_pdf(converted,rendered)
+                        result['pdf']=base64.b64encode(rendered.read_bytes()).decode('ascii')
+                        preview=Path(td)/f'{suffix}.png'; render_preview(rendered,preview)
+                        result['preview']=base64.b64encode(preview.read_bytes()).decode('ascii')
+                return self.send_json(200,result)
+            except Exception as exc: return self.send_json(400,{"error":str(exc)})
         if path != '/api/recognize': return self.send_json(404,{"error":"Not found"})
         if not self.authorized(): return self.send_json(401,{"error":"Unauthorized"})
         binary=find_audiveris()
@@ -133,8 +157,10 @@ class Handler(SimpleHTTPRequestHandler):
                 data=parse_musicxml(mxl)
                 title=Path(filename).stem.replace('_',' ').replace('-',' ').strip().title()
                 # Preserve the recognized system layout until the correction UI can safely reflow every score.
+                source_mxl=base64.b64encode(mxl.read_bytes()).decode('ascii')
                 learning_modes={}; renderer=find_musescore()
-                for mode,suffix in [('all','all-letters'),('guide','fewer-hints'),('none','standard')]:
+                # Prepare the first-shown option now; alternate modes are rendered on demand.
+                for mode,suffix in [('all','all-letters')]:
                     converted=out/(mxl.stem+f'-{suffix}.mxl')
                     label_count=convert_mxl(mxl,converted,title=title,clean_layout=False,label_mode=mode)
                     result={"labelCount":label_count,"mxl":base64.b64encode(converted.read_bytes()).decode('ascii'),"pdf":None,"preview":None}
@@ -145,7 +171,7 @@ class Handler(SimpleHTTPRequestHandler):
                         result['preview']=base64.b64encode(preview.read_bytes()).decode('ascii')
                     learning_modes[mode]=result
             primary=learning_modes['all']
-            data.update({"fileName":filename,"engine":"Audiveris","reviewRequired":True,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
+            data.update({"fileName":filename,"engine":"Audiveris","reviewRequired":True,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"sourceMxl":source_mxl,"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
             return self.send_json(200,data)
         except subprocess.TimeoutExpired: return self.send_json(504,{"error":"Recognition took longer than eight minutes."})
         except Exception as exc: return self.send_json(400,{"error":str(exc)})
