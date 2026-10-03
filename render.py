@@ -20,8 +20,8 @@ def render_pdf(source,destination,binary=None):
     if run.returncode or not destination.exists(): raise RuntimeError('MuseScore could not render this score to PDF.')
     return destination
 
-def render_pages_and_lines(source,output_dir,dpi=90):
-    """Render every PDF page and crop its musical systems into ordered swipe segments."""
+def render_pages_and_lines(source,output_dir,dpi=90,line_dpi=180):
+    """Render low-memory pages plus high-resolution musical systems one page at a time."""
     source=Path(source); output_dir=Path(output_dir); output_dir.mkdir(parents=True,exist_ok=True)
     binary=shutil.which('pdftoppm')
     if not binary: raise RuntimeError('pdftoppm is not installed.')
@@ -30,27 +30,33 @@ def render_pages_and_lines(source,output_dir,dpi=90):
     pages=sorted(output_dir.glob('page-*.png'),key=lambda p:int(p.stem.rsplit('-',1)[-1]))
     if run.returncode or not pages: raise RuntimeError('The score pages could not be rendered.')
     lines=[]
+    ratio=line_dpi/dpi
     for page_number,page in enumerate(pages,1):
-        image=Image.open(page).convert('RGB'); gray=image.convert('L'); width,height=image.size
-        # Rows containing notation have enough dark pixels to exclude blank margins.
-        active=[]
-        pixels=gray.load()
-        threshold=max(10,int(width*.012))
+        # Render only this page at high resolution, then discard it after cropping.
+        detail_root=output_dir/f'detail-{page_number:03d}'
+        detail=detail_root.with_suffix('.png')
+        detail_run=subprocess.run([binary,'-png','-f',str(page_number),'-l',str(page_number),'-singlefile','-r',str(line_dpi),str(source),str(detail_root)],capture_output=True,text=True,timeout=90)
+        if detail_run.returncode or not detail.exists(): continue
+        with Image.open(detail) as opened:
+            image=opened.convert('RGB')
+        gray=image.convert('L'); width,height=image.size
+        active=[]; pixels=gray.load(); threshold=max(10,int(width*.012))
         for y in range(height):
             if sum(1 for x in range(0,width,2) if pixels[x,y] < 190) >= threshold//2: active.append(y)
         groups=[]
+        merge_gap=max(58,int(58*ratio))
         for y in active:
-            if not groups or y-groups[-1][-1] > 58: groups.append([y])
+            if not groups or y-groups[-1][-1] > merge_gap: groups.append([y])
             else: groups[-1].append(y)
-        groups=[g for g in groups if g[-1]-g[0] >= 55]
+        groups=[g for g in groups if g[-1]-g[0] >= int(55*ratio)]
         for line_number,g in enumerate(groups,1):
-            top=max(0,g[0]-28); bottom=min(height,g[-1]+29)
+            padding=int(28*ratio); top=max(0,g[0]-padding); bottom=min(height,g[-1]+padding+1)
             crop=image.crop((0,top,width,bottom))
             target=output_dir/f'line-{page_number:03d}-{line_number:03d}.png'
             crop.save(target,optimize=True)
-            lines.append(target)
-    if not lines:
-        lines=pages[:]
+            crop.close(); lines.append(target)
+        gray.close(); image.close(); detail.unlink(missing_ok=True)
+    if not lines: lines=pages[:]
     return pages,lines
 
 def render_preview(source,destination):
