@@ -24,6 +24,18 @@ def add_letter_noteheads(xml_bytes,title=None,composer=None,clean_layout=True,la
                     for child in list(item): item.remove(child)
         defaults=root.find('defaults')
         if defaults is not None: root.remove(defaults)
+    # Enlarge the engraved staff for phone viewing and more readable printing.
+    defaults=root.find('defaults')
+    if defaults is None:
+        defaults=ET.Element('defaults'); root.insert(0,defaults)
+    scaling=defaults.find('scaling')
+    if scaling is None: scaling=ET.SubElement(defaults,'scaling')
+    millimeters=scaling.find('millimeters')
+    if millimeters is None: millimeters=ET.SubElement(scaling,'millimeters')
+    millimeters.text='8.5'
+    tenths=scaling.find('tenths')
+    if tenths is None: tenths=ET.SubElement(scaling,'tenths')
+    tenths.text='40'
     if title:
         work=root.find('work')
         if work is None: work=ET.Element('work'); root.insert(0,work)
