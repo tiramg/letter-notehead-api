@@ -8,7 +8,7 @@ import base64, json, os, shutil, subprocess, tempfile, threading, uuid, zipfile
 import urllib.error, urllib.request
 import xml.etree.ElementTree as ET
 from engrave import convert_mxl
-from render import find_musescore, render_pdf, render_preview
+from render import find_musescore, render_pdf, render_preview, render_pages_and_lines
 
 ROOT = Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", os.environ.get("LETTER_NOTEHEAD_PORT", "10000")))
@@ -71,7 +71,14 @@ def parse_musicxml(mxl_path):
                 note_count+=1; durations.append(duration)
             pdata['measures'].append({"number":number,"notes":notes})
         parts.append(pdata)
-    return {"parts":parts,"noteCount":note_count,"measureCount":len(measure_numbers),"durations":sorted(set(durations))}
+    fifths_text=root.findtext('part/measure/attributes/key/fifths')
+    try: fifths=int(fifths_text or 0)
+    except ValueError: fifths=0
+    sharp_order=['F♯','C♯','G♯','D♯','A♯','E♯','B♯']
+    flat_order=['B♭','E♭','A♭','D♭','G♭','C♭','F♭']
+    altered=sharp_order[:fifths] if fifths > 0 else flat_order[:abs(fifths)] if fifths < 0 else []
+    key_guide=('Sharps: '+', '.join(altered)) if fifths > 0 else ('Flats: '+', '.join(altered)) if fifths < 0 else 'No sharps or flats'
+    return {"parts":parts,"noteCount":note_count,"measureCount":len(measure_numbers),"durations":sorted(set(durations)),"keyGuide":key_guide}
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self,*args,**kwargs): super().__init__(*args,directory=str(ROOT),**kwargs)
@@ -121,13 +128,15 @@ class Handler(SimpleHTTPRequestHandler):
                     source=Path(td)/'source.mxl'; source.write_bytes(source_bytes)
                     converted=Path(td)/f'{suffix}.mxl'
                     label_count=convert_mxl(source,converted,title=title,clean_layout=False,label_mode=mode)
-                    result={"labelCount":label_count,"mxl":base64.b64encode(converted.read_bytes()).decode('ascii'),"pdf":None,"preview":None}
+                    result={"labelCount":label_count,"mxl":base64.b64encode(converted.read_bytes()).decode('ascii'),"pdf":None,"preview":None,"pages":[],"lines":[]}
                     renderer=find_musescore()
                     if renderer:
                         rendered=Path(td)/f'{suffix}.pdf'; render_pdf(converted,rendered)
                         result['pdf']=base64.b64encode(rendered.read_bytes()).decode('ascii')
-                        preview=Path(td)/f'{suffix}.png'; render_preview(rendered,preview)
-                        result['preview']=base64.b64encode(preview.read_bytes()).decode('ascii')
+                        pages,lines=render_pages_and_lines(rendered,Path(td)/f'{suffix}-images')
+                        result['pages']=[base64.b64encode(p.read_bytes()).decode('ascii') for p in pages]
+                        result['lines']=[base64.b64encode(p.read_bytes()).decode('ascii') for p in lines]
+                        result['preview']=result['pages'][0] if result['pages'] else None
                 return self.send_json(200,result)
             except Exception as exc: return self.send_json(400,{"error":str(exc)})
         if path != '/api/recognize': return self.send_json(404,{"error":"Not found"})
@@ -163,12 +172,14 @@ class Handler(SimpleHTTPRequestHandler):
                 for mode,suffix in [('all','all-letters')]:
                     converted=out/(mxl.stem+f'-{suffix}.mxl')
                     label_count=convert_mxl(mxl,converted,title=title,clean_layout=False,label_mode=mode)
-                    result={"labelCount":label_count,"mxl":base64.b64encode(converted.read_bytes()).decode('ascii'),"pdf":None,"preview":None}
+                    result={"labelCount":label_count,"mxl":base64.b64encode(converted.read_bytes()).decode('ascii'),"pdf":None,"preview":None,"pages":[],"lines":[]}
                     if renderer:
                         rendered=out/(mxl.stem+f'-{suffix}.pdf'); render_pdf(converted,rendered)
                         result['pdf']=base64.b64encode(rendered.read_bytes()).decode('ascii')
-                        preview=out/(mxl.stem+f'-{suffix}.png'); render_preview(rendered,preview)
-                        result['preview']=base64.b64encode(preview.read_bytes()).decode('ascii')
+                        pages,lines=render_pages_and_lines(rendered,out/(mxl.stem+f'-{suffix}-images'))
+                        result['pages']=[base64.b64encode(p.read_bytes()).decode('ascii') for p in pages]
+                        result['lines']=[base64.b64encode(p.read_bytes()).decode('ascii') for p in lines]
+                        result['preview']=result['pages'][0] if result['pages'] else None
                     learning_modes[mode]=result
             primary=learning_modes['all']
             data.update({"fileName":filename,"engine":"Audiveris","reviewRequired":True,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"sourceMxl":source_mxl,"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
