@@ -4,7 +4,8 @@ from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path
 from urllib.parse import urlparse
-import base64, json, os, shutil, subprocess, tempfile, zipfile
+import base64, json, os, shutil, subprocess, tempfile, threading, uuid, zipfile
+import urllib.error, urllib.request
 import xml.etree.ElementTree as ET
 from engrave import convert_mxl
 from render import find_musescore, render_pdf, render_preview
@@ -12,6 +13,30 @@ from render import find_musescore, render_pdf, render_preview
 ROOT = Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", os.environ.get("LETTER_NOTEHEAD_PORT", "10000")))
 API_TOKEN = os.environ.get("LETTER_NOTEHEAD_API_TOKEN", "").strip()
+JOBS = {}
+JOBS_LOCK = threading.Lock()
+
+
+def run_async_job(job_id, raw, content_type, authorization):
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{PORT}/api/recognize",
+        data=raw,
+        method="POST",
+        headers={"Content-Type": content_type, "Authorization": authorization},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=600) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        job = {"status": "complete", "result": result}
+    except urllib.error.HTTPError as exc:
+        try: payload = json.loads(exc.read().decode("utf-8"))
+        except Exception: payload = {"error": f"Recognition failed with status {exc.code}."}
+        job = {"status": "failed", "error": payload.get("error", "Recognition failed."), "serverStatus": exc.code}
+    except Exception as exc:
+        job = {"status": "failed", "error": str(exc)}
+    with JOBS_LOCK:
+        JOBS[job_id] = job
+
 
 def find_audiveris():
     configured = os.environ.get("AUDIVERIS_BIN")
@@ -57,11 +82,31 @@ class Handler(SimpleHTTPRequestHandler):
     def authorized(self):
         return not API_TOKEN or self.headers.get('Authorization','') == 'Bearer '+API_TOKEN
     def do_GET(self):
-        if urlparse(self.path).path in {'/','/health','/api/status'}:
+        path=urlparse(self.path).path
+        if path.startswith('/api/jobs/'):
+            if not self.authorized(): return self.send_json(401,{"error":"Unauthorized"})
+            job_id=path.rsplit('/',1)[-1]
+            with JOBS_LOCK: job=JOBS.get(job_id)
+            if job is None: return self.send_json(404,{"error":"Recognition job not found."})
+            return self.send_json(200,job)
+        if path in {'/','/health','/api/status'}:
             binary=find_audiveris(); renderer=find_musescore(); return self.send_json(200,{"ready":bool(binary),"engine":"Audiveris","configuredPath":binary,"pdfReady":bool(renderer),"renderer":"MuseScore Studio","rendererPath":renderer})
         return self.send_json(404,{"error":"Not found"})
     def do_POST(self):
-        if urlparse(self.path).path != '/api/recognize': return self.send_json(404,{"error":"Not found"})
+        path=urlparse(self.path).path
+        if path == '/api/recognize-async':
+            if not self.authorized(): return self.send_json(401,{"error":"Unauthorized"})
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if length <= 0 or length > 30*1024*1024: raise ValueError('Choose a file smaller than 30 MB.')
+                raw=self.rfile.read(length)
+                job_id=uuid.uuid4().hex
+                with JOBS_LOCK: JOBS[job_id]={"status":"processing"}
+                worker=threading.Thread(target=run_async_job,args=(job_id,raw,self.headers.get('Content-Type',''),self.headers.get('Authorization','')),daemon=True)
+                worker.start()
+                return self.send_json(202,{"jobId":job_id,"status":"processing"})
+            except Exception as exc: return self.send_json(400,{"error":str(exc)})
+        if path != '/api/recognize': return self.send_json(404,{"error":"Not found"})
         if not self.authorized(): return self.send_json(401,{"error":"Unauthorized"})
         binary=find_audiveris()
         if not binary: return self.send_json(503,{"error":"Audiveris is not installed or AUDIVERIS_BIN is not configured."})
