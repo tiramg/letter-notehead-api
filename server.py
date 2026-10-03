@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 import base64, json, os, shutil, subprocess, tempfile, zipfile
 import xml.etree.ElementTree as ET
 from engrave import convert_mxl
-from render import find_musescore, render_pdf
+from render import find_musescore, render_pdf, render_preview
 
 ROOT = Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", os.environ.get("LETTER_NOTEHEAD_PORT", "10000")))
@@ -87,10 +87,12 @@ class Handler(SimpleHTTPRequestHandler):
                 for mode,suffix in [('all','all-letters'),('guide','fewer-hints'),('none','standard')]:
                     converted=out/(mxl.stem+f'-{suffix}.mxl')
                     label_count=convert_mxl(mxl,converted,title=title,clean_layout=False,label_mode=mode)
-                    result={"labelCount":label_count,"mxl":base64.b64encode(converted.read_bytes()).decode('ascii'),"pdf":None}
+                    result={"labelCount":label_count,"mxl":base64.b64encode(converted.read_bytes()).decode('ascii'),"pdf":None,"preview":None}
                     if renderer:
                         rendered=out/(mxl.stem+f'-{suffix}.pdf'); render_pdf(converted,rendered)
                         result['pdf']=base64.b64encode(rendered.read_bytes()).decode('ascii')
+                        preview=out/(mxl.stem+f'-{suffix}.png'); render_preview(rendered,preview)
+                        result['preview']=base64.b64encode(preview.read_bytes()).decode('ascii')
                     learning_modes[mode]=result
             primary=learning_modes['all']
             data.update({"fileName":filename,"engine":"Audiveris","reviewRequired":True,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
