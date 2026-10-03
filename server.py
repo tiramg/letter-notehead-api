@@ -15,6 +15,7 @@ PORT = int(os.environ.get("PORT", os.environ.get("LETTER_NOTEHEAD_PORT", "10000"
 API_TOKEN = os.environ.get("LETTER_NOTEHEAD_API_TOKEN", "").strip()
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+RECOGNITION_LOCK = threading.Lock()
 
 
 def run_async_job(job_id, raw, content_type, authorization):
@@ -25,8 +26,10 @@ def run_async_job(job_id, raw, content_type, authorization):
         headers={"Content-Type": content_type, "Authorization": authorization},
     )
     try:
-        with urllib.request.urlopen(request, timeout=600) as response:
-            result = json.loads(response.read().decode("utf-8"))
+        # Audiveris and MuseScore are memory-heavy; serialize jobs on the 512 MB service.
+        with RECOGNITION_LOCK:
+            with urllib.request.urlopen(request, timeout=600) as response:
+                result = json.loads(response.read().decode("utf-8"))
         job = {"status": "complete", "result": result}
     except urllib.error.HTTPError as exc:
         try: payload = json.loads(exc.read().decode("utf-8"))
@@ -93,7 +96,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path.startswith('/api/jobs/'):
             if not self.authorized(): return self.send_json(401,{"error":"Unauthorized"})
             job_id=path.rsplit('/',1)[-1]
-            with JOBS_LOCK: job=JOBS.get(job_id)
+            with JOBS_LOCK:
+                job=JOBS.get(job_id)
+                if job and job.get('status') in {'complete','failed'}: JOBS.pop(job_id,None)
             if job is None: return self.send_json(404,{"error":"Recognition job not found."})
             return self.send_json(200,job)
         if path in {'/','/health','/api/status'}:
@@ -155,7 +160,9 @@ class Handler(SimpleHTTPRequestHandler):
             with tempfile.TemporaryDirectory(prefix='letter-notehead-') as td:
                 source=Path(td)/filename; source.write_bytes(item.get_payload(decode=True)); out=Path(td)/'output'; out.mkdir()
                 command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-transcribe','-export','-output',str(out),'--',str(source)]
-                run=subprocess.run(command,capture_output=True,text=True,timeout=480)
+                java_env=os.environ.copy()
+                java_env['JAVA_TOOL_OPTIONS']='-Xmx300m -XX:+UseSerialGC'
+                run=subprocess.run(command,capture_output=True,text=True,timeout=480,env=java_env)
                 # Audiveris writes book outputs in a score-named subfolder
                 # beneath the configured output directory.
                 mxl=next(out.rglob('*.mxl'),None)
