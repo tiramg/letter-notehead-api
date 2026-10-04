@@ -4,7 +4,7 @@ from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path
 from urllib.parse import urlparse
-import base64, hashlib, json, os, shutil, subprocess, tempfile, threading, uuid, zipfile
+import base64, hashlib, json, os, shutil, signal, subprocess, tempfile, threading, uuid, zipfile
 import urllib.error, urllib.request
 import xml.etree.ElementTree as ET
 from PIL import Image, ImageOps
@@ -17,6 +17,8 @@ API_TOKEN = os.environ.get("LETTER_NOTEHEAD_API_TOKEN", "").strip()
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 RECOGNITION_LOCK = threading.Lock()
+PROCESS_LOCK = threading.Lock()
+ACTIVE_PROCESSES = {}
 CACHE_DIR = Path(os.environ.get("LETTER_NOTEHEAD_CACHE_DIR", "/tmp/letter-notehead-cache"))
 CACHE_VERSION = "recognition-v3"
 CACHE_MAX_BYTES = 120 * 1024 * 1024
@@ -73,7 +75,7 @@ def run_async_job(job_id, raw, content_type, authorization):
         f"http://127.0.0.1:{PORT}/api/recognize",
         data=raw,
         method="POST",
-        headers={"Content-Type": content_type, "Authorization": authorization},
+        headers={"Content-Type": content_type, "Authorization": authorization, "X-Job-ID": job_id},
     )
     try:
         # Audiveris and MuseScore are memory-heavy; serialize jobs on the 512 MB service.
@@ -88,7 +90,19 @@ def run_async_job(job_id, raw, content_type, authorization):
     except Exception as exc:
         job = {"status": "failed", "error": str(exc)}
     with JOBS_LOCK:
-        JOBS[job_id] = job
+        if JOBS.get(job_id, {}).get("status") != "cancelled":
+            JOBS[job_id] = job
+
+
+def stop_job_process(job_id):
+    with PROCESS_LOCK:
+        process = ACTIVE_PROCESSES.get(job_id)
+    if process and process.poll() is None:
+        try:
+            if os.name == "posix": os.killpg(process.pid, signal.SIGTERM)
+            else: process.terminate()
+        except ProcessLookupError:
+            pass
 
 
 def find_audiveris():
@@ -156,6 +170,16 @@ class Handler(SimpleHTTPRequestHandler):
         return self.send_json(404,{"error":"Not found"})
     def do_POST(self):
         path=urlparse(self.path).path
+        if path.startswith('/api/jobs/') and path.endswith('/cancel'):
+            if not self.authorized(): return self.send_json(401,{"error":"Unauthorized"})
+            job_id=path.strip('/').split('/')[-2]
+            with JOBS_LOCK:
+                job=JOBS.get(job_id)
+                if job is None: return self.send_json(404,{"error":"Recognition job not found."})
+                if job.get("status") == "complete": return self.send_json(409,{"error":"Recognition has already finished."})
+                JOBS[job_id]={"status":"cancelled"}
+            stop_job_process(job_id)
+            return self.send_json(200,{"jobId":job_id,"status":"cancelled"})
         if path == '/api/recognize-async':
             if not self.authorized(): return self.send_json(401,{"error":"Unauthorized"})
             try:
@@ -222,13 +246,29 @@ class Handler(SimpleHTTPRequestHandler):
                 command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-transcribe','-export','-output',str(out),'--',str(source)]
                 java_env=os.environ.copy()
                 java_env['JAVA_TOOL_OPTIONS']='-Xmx300m -XX:+UseSerialGC'
-                run=subprocess.run(command,capture_output=True,text=True,timeout=480,env=java_env)
+                job_id=self.headers.get('X-Job-ID','')
+                process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=java_env,start_new_session=(os.name == 'posix'))
+                if job_id:
+                    with PROCESS_LOCK: ACTIVE_PROCESSES[job_id]=process
+                try:
+                    stdout,stderr=process.communicate(timeout=480)
+                except subprocess.TimeoutExpired:
+                    if os.name == 'posix': os.killpg(process.pid,signal.SIGKILL)
+                    else: process.kill()
+                    process.communicate()
+                    raise
+                finally:
+                    if job_id:
+                        with PROCESS_LOCK: ACTIVE_PROCESSES.pop(job_id,None)
+                with JOBS_LOCK:
+                    cancelled=bool(job_id and JOBS.get(job_id,{}).get('status') == 'cancelled')
+                if cancelled: raise RuntimeError('Recognition was cancelled.')
                 # Audiveris writes book outputs in a score-named subfolder
                 # beneath the configured output directory.
                 mxl=next(out.rglob('*.mxl'),None)
-                if run.returncode or not mxl:
-                    diagnostic=(run.stderr or run.stdout or 'No diagnostic output').strip()[-6000:]
-                    print(f'Audiveris failed ({run.returncode}) for {filename}:\n{diagnostic}',flush=True)
+                if process.returncode or not mxl:
+                    diagnostic=(stderr or stdout or 'No diagnostic output').strip()[-6000:]
+                    print(f'Audiveris failed ({process.returncode}) for {filename}:\n{diagnostic}',flush=True)
                     raise RuntimeError('Recognition did not produce a score. Try a clearer, straight-on image.')
                 data=parse_musicxml(mxl)
                 title=Path(filename).stem.replace('_',' ').replace('-',' ').strip().title()
