@@ -250,6 +250,8 @@ class Handler(SimpleHTTPRequestHandler):
                 process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=java_env,start_new_session=(os.name == 'posix'))
                 if job_id:
                     with PROCESS_LOCK: ACTIVE_PROCESSES[job_id]=process
+                    with JOBS_LOCK: cancelled_before_start=JOBS.get(job_id,{}).get('status') == 'cancelled'
+                    if cancelled_before_start: stop_job_process(job_id)
                 try:
                     stdout,stderr=process.communicate(timeout=480)
                 except subprocess.TimeoutExpired:
