@@ -7,9 +7,9 @@ from urllib.parse import urlparse
 import base64, hashlib, json, os, shutil, signal, subprocess, tempfile, threading, uuid, zipfile
 import urllib.error, urllib.request
 import xml.etree.ElementTree as ET
-from PIL import Image, ImageOps
 from engrave import convert_mxl
 from render import find_musescore, render_pdf, render_preview, render_pages_and_lines
+from photo_prep import prepare_photo
 
 ROOT = Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", os.environ.get("LETTER_NOTEHEAD_PORT", "10000")))
@@ -20,7 +20,7 @@ RECOGNITION_LOCK = threading.Lock()
 PROCESS_LOCK = threading.Lock()
 ACTIVE_PROCESSES = {}
 CACHE_DIR = Path(os.environ.get("LETTER_NOTEHEAD_CACHE_DIR", "/tmp/letter-notehead-cache"))
-CACHE_VERSION = "recognition-v3"
+CACHE_VERSION = "recognition-v4-photo-quality"
 CACHE_MAX_BYTES = 120 * 1024 * 1024
 CACHE_MAX_FILES = 4
 
@@ -55,19 +55,6 @@ def write_cached_result(path, result):
                 item.unlink(missing_ok=True)
     except Exception as exc:
         print(f"Recognition cache warning: {exc}", flush=True)
-
-
-def prepare_fast_image(source_bytes, suffix, directory):
-    """Safely reduce oversized phone photos before OMR; PDFs stay untouched."""
-    if suffix not in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}: return source_bytes, suffix
-    target = directory / "fast-input.png"
-    with Image.open(__import__("io").BytesIO(source_bytes)) as opened:
-        image = ImageOps.exif_transpose(opened).convert("L")
-        image = ImageOps.autocontrast(image, cutoff=1)
-        image.thumbnail((2600, 2600), Image.Resampling.LANCZOS)
-        image.save(target, "PNG", optimize=True)
-        image.close()
-    return target.read_bytes(), ".png"
 
 
 def run_async_job(job_id, raw, content_type, authorization):
@@ -241,7 +228,9 @@ class Handler(SimpleHTTPRequestHandler):
             if cached is not None: return self.send_json(200,cached)
             with tempfile.TemporaryDirectory(prefix='letter-notehead-') as td:
                 td_path=Path(td)
-                prepared_bytes,prepared_suffix=prepare_fast_image(score_bytes,suffix,td_path) if quality == 'fast' else (score_bytes,suffix)
+                prepared_bytes,prepared_suffix,quality_assessment=prepare_photo(score_bytes,suffix,td_path,quality)
+                if quality_assessment.get('confidence') == 'low' and quality_assessment.get('staffLineCount', 10) < 5:
+                    raise ValueError('This photo is too unclear to recognize reliably. Fill the frame with one flat page, avoid shadows, and retake it straight on.')
                 source=td_path/('score'+prepared_suffix); source.write_bytes(prepared_bytes); out=td_path/'output'; out.mkdir()
                 command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-transcribe','-export','-output',str(out),'--',str(source)]
                 java_env=os.environ.copy()
@@ -291,7 +280,13 @@ class Handler(SimpleHTTPRequestHandler):
                         result['preview']=result['pages'][0] if result['pages'] else None
                     learning_modes[mode]=result
             primary=learning_modes['all']
-            data.update({"fileName":filename,"engine":"Audiveris","recognitionMode":quality,"cacheHit":False,"reviewRequired":True,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"sourceMxl":source_mxl,"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
+            if quality_assessment.get('kind') == 'photo':
+                quality_assessment['recognizedNotes'] = data['noteCount']
+                quality_assessment['recognizedMeasures'] = data['measureCount']
+                if data['noteCount'] < 8 or data['measureCount'] < 1:
+                    quality_assessment['confidence'] = 'low'
+                    quality_assessment['warnings'].insert(0, 'Recognition found too little musical content to trust this result.')
+            data.update({"fileName":filename,"engine":"Audiveris","recognitionMode":quality,"cacheHit":False,"reviewRequired":True,"qualityAssessment":quality_assessment,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"sourceMxl":source_mxl,"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
             write_cached_result(cached_path,data)
             return self.send_json(200,data)
         except subprocess.TimeoutExpired: return self.send_json(504,{"error":"Recognition took longer than eight minutes."})
