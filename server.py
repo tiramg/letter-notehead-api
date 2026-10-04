@@ -4,9 +4,10 @@ from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path
 from urllib.parse import urlparse
-import base64, json, os, shutil, subprocess, tempfile, threading, uuid, zipfile
+import base64, hashlib, json, os, shutil, subprocess, tempfile, threading, uuid, zipfile
 import urllib.error, urllib.request
 import xml.etree.ElementTree as ET
+from PIL import Image, ImageOps
 from engrave import convert_mxl
 from render import find_musescore, render_pdf, render_preview, render_pages_and_lines
 
@@ -16,6 +17,55 @@ API_TOKEN = os.environ.get("LETTER_NOTEHEAD_API_TOKEN", "").strip()
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 RECOGNITION_LOCK = threading.Lock()
+CACHE_DIR = Path(os.environ.get("LETTER_NOTEHEAD_CACHE_DIR", "/tmp/letter-notehead-cache"))
+CACHE_VERSION = "recognition-v3"
+CACHE_MAX_BYTES = 120 * 1024 * 1024
+CACHE_MAX_FILES = 4
+
+
+def cache_path(score_bytes, quality):
+    digest = hashlib.sha256(score_bytes + b"|" + CACHE_VERSION.encode() + b"|" + quality.encode()).hexdigest()
+    return CACHE_DIR / f"{digest}.json"
+
+
+def read_cached_result(path):
+    try:
+        if not path.exists(): return None
+        os.utime(path, None)
+        result = json.loads(path.read_text(encoding="utf-8"))
+        result["cacheHit"] = True
+        return result
+    except Exception:
+        return None
+
+
+def write_cached_result(path, result):
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(result), encoding="utf-8")
+        temporary.replace(path)
+        files = sorted(CACHE_DIR.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+        total = 0
+        for index, item in enumerate(files):
+            total += item.stat().st_size
+            if index >= CACHE_MAX_FILES or total > CACHE_MAX_BYTES:
+                item.unlink(missing_ok=True)
+    except Exception as exc:
+        print(f"Recognition cache warning: {exc}", flush=True)
+
+
+def prepare_fast_image(source_bytes, suffix, directory):
+    """Safely reduce oversized phone photos before OMR; PDFs stay untouched."""
+    if suffix not in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}: return source_bytes, suffix
+    target = directory / "fast-input.png"
+    with Image.open(__import__("io").BytesIO(source_bytes)) as opened:
+        image = ImageOps.exif_transpose(opened).convert("L")
+        image = ImageOps.autocontrast(image, cutoff=1)
+        image.thumbnail((2600, 2600), Image.Resampling.LANCZOS)
+        image.save(target, "PNG", optimize=True)
+        image.close()
+    return target.read_bytes(), ".png"
 
 
 def run_async_job(job_id, raw, content_type, authorization):
@@ -156,9 +206,19 @@ class Handler(SimpleHTTPRequestHandler):
             item=next((p for p in msg.iter_parts() if p.get_param('name',header='content-disposition')=='score'),None)
             if item is None: raise ValueError('No score file was received.')
             filename=Path(item.get_filename() or 'score.pdf').name
-            if Path(filename).suffix.lower() not in {'.pdf','.png','.jpg','.jpeg','.tif','.tiff'}: raise ValueError('Use a PDF, PNG, JPG, or TIFF file.')
+            suffix=Path(filename).suffix.lower()
+            if suffix not in {'.pdf','.png','.jpg','.jpeg','.tif','.tiff'}: raise ValueError('Use a PDF, PNG, JPG, or TIFF file.')
+            quality_item=next((p for p in msg.iter_parts() if p.get_param('name',header='content-disposition')=='recognitionMode'),None)
+            quality=(quality_item.get_payload(decode=True).decode('utf-8','ignore').strip() if quality_item else 'fast')
+            if quality not in {'fast','best'}: quality='fast'
+            score_bytes=item.get_payload(decode=True)
+            cached_path=cache_path(score_bytes,quality)
+            cached=read_cached_result(cached_path)
+            if cached is not None: return self.send_json(200,cached)
             with tempfile.TemporaryDirectory(prefix='letter-notehead-') as td:
-                source=Path(td)/filename; source.write_bytes(item.get_payload(decode=True)); out=Path(td)/'output'; out.mkdir()
+                td_path=Path(td)
+                prepared_bytes,prepared_suffix=prepare_fast_image(score_bytes,suffix,td_path) if quality == 'fast' else (score_bytes,suffix)
+                source=td_path/('score'+prepared_suffix); source.write_bytes(prepared_bytes); out=td_path/'output'; out.mkdir()
                 command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-transcribe','-export','-output',str(out),'--',str(source)]
                 java_env=os.environ.copy()
                 java_env['JAVA_TOOL_OPTIONS']='-Xmx300m -XX:+UseSerialGC'
@@ -189,7 +249,8 @@ class Handler(SimpleHTTPRequestHandler):
                         result['preview']=result['pages'][0] if result['pages'] else None
                     learning_modes[mode]=result
             primary=learning_modes['all']
-            data.update({"fileName":filename,"engine":"Audiveris","reviewRequired":True,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"sourceMxl":source_mxl,"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
+            data.update({"fileName":filename,"engine":"Audiveris","recognitionMode":quality,"cacheHit":False,"reviewRequired":True,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"sourceMxl":source_mxl,"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
+            write_cached_result(cached_path,data)
             return self.send_json(200,data)
         except subprocess.TimeoutExpired: return self.send_json(504,{"error":"Recognition took longer than eight minutes."})
         except Exception as exc: return self.send_json(400,{"error":str(exc)})
