@@ -75,8 +75,10 @@ def run_async_job(job_id, raw, content_type, authorization):
         try: payload = json.loads(exc.read().decode("utf-8"))
         except Exception: payload = {"error": f"Recognition failed with status {exc.code}."}
         job = {"status": "failed", "error": payload.get("error", "Recognition failed."), "serverStatus": exc.code}
+        print(f"Recognition job {job_id} failed ({exc.code}): {job['error']}", flush=True)
     except Exception as exc:
         job = {"status": "failed", "error": str(exc)}
+        print(f"Recognition job {job_id} failed: {exc}", flush=True)
     with JOBS_LOCK:
         if JOBS.get(job_id, {}).get("status") != "cancelled":
             JOBS[job_id] = job
@@ -288,7 +290,10 @@ class Handler(SimpleHTTPRequestHandler):
                     command += ['-constant','org.audiveris.omr.image.ImageLoading.pdfResolution=350','-constant','org.audiveris.omr.text.tesseract.TesseractOCR.useOCR=false']
                 command += ['-transcribe','-export','-output',str(out),'--',str(source)]
                 java_env=os.environ.copy()
-                java_env['JAVA_TOOL_OPTIONS']='-Xmx300m -XX:+UseSerialGC'
+                # Leave native-memory headroom for Java, Python, Xvfb, and the
+                # renderer on Render's 512 MB instance. The 350-DPI benchmark
+                # produces the same 601-note result with a 260 MB Java heap.
+                java_env['JAVA_TOOL_OPTIONS']='-Xmx260m -XX:+UseSerialGC'
                 job_id=self.headers.get('X-Job-ID','')
                 stage_started=time.monotonic()
                 process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=java_env,start_new_session=(os.name == 'posix'))
