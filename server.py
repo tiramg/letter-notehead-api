@@ -21,7 +21,7 @@ RECOGNITION_LOCK = threading.Lock()
 PROCESS_LOCK = threading.Lock()
 ACTIVE_PROCESSES = {}
 CACHE_DIR = Path(os.environ.get("LETTER_NOTEHEAD_CACHE_DIR", "/tmp/letter-notehead-cache"))
-CACHE_VERSION = "recognition-v5-pdf-350"
+CACHE_VERSION = "recognition-v6-pdf-sequential"
 CACHE_MAX_BYTES = 120 * 1024 * 1024
 CACHE_MAX_FILES = 4
 
@@ -167,6 +167,63 @@ def validate_musicxml(mxl_path):
                 suspects.append({"part":part.attrib.get('id'),"measure":measure.attrib.get('number'),"filled":round(furthest/expected,3),"recognizedNotes":pitched})
     return {"suspectMeasures":suspects,"suspectMeasureCount":len(suspects),"method":"meter-duration-check"}
 
+
+def merge_mxl_pages(page_paths, destination):
+    """Join independently recognized PDF pages without reloading them in Audiveris."""
+    roots=[]; score_names=[]
+    for path in page_paths:
+        with zipfile.ZipFile(path) as zf:
+            score_name=next(n for n in zf.namelist() if n.endswith('.xml') and not n.startswith('META-INF/'))
+            roots.append(ET.fromstring(zf.read(score_name))); score_names.append(score_name)
+    merged=roots[0]
+    merged_parts={part.attrib.get('id'):part for part in merged.findall('part')}
+    for page_root in roots[1:]:
+        for page_part in page_root.findall('part'):
+            target=merged_parts.get(page_part.attrib.get('id'))
+            if target is None: continue
+            for index,measure in enumerate(page_part.findall('measure')):
+                if index == 0:
+                    page_break=measure.find('print')
+                    if page_break is None: page_break=ET.Element('print'); measure.insert(0,page_break)
+                    page_break.set('new-page','yes')
+                target.append(measure)
+    for part in merged.findall('part'):
+        for number,measure in enumerate(part.findall('measure'),1): measure.set('number',str(number))
+    with zipfile.ZipFile(page_paths[0]) as source_zip, zipfile.ZipFile(destination,'w',zipfile.ZIP_DEFLATED) as output_zip:
+        score_name=score_names[0]
+        for info in source_zip.infolist():
+            if info.filename != score_name: output_zip.writestr(info,source_zip.read(info.filename))
+        output_zip.writestr(score_name,ET.tostring(merged,encoding='utf-8',xml_declaration=True))
+
+
+def run_audiveris(binary, source, output, job_id, pdf_constants=False):
+    command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-swap']
+    if pdf_constants:
+        command += ['-constant','org.audiveris.omr.image.ImageLoading.pdfResolution=350','-constant','org.audiveris.omr.text.tesseract.TesseractOCR.useOCR=false']
+    command += ['-transcribe','-export','-output',str(output),'--',str(source)]
+    java_env=os.environ.copy(); java_env['JAVA_TOOL_OPTIONS']='-Xmx200m -XX:+UseSerialGC'
+    process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=java_env,start_new_session=(os.name == 'posix'))
+    if job_id:
+        with PROCESS_LOCK: ACTIVE_PROCESSES[job_id]=process
+        with JOBS_LOCK: cancelled_before_start=JOBS.get(job_id,{}).get('status') == 'cancelled'
+        if cancelled_before_start: stop_job_process(job_id)
+    try: stdout,stderr=process.communicate(timeout=480)
+    except subprocess.TimeoutExpired:
+        if os.name == 'posix': os.killpg(process.pid,signal.SIGKILL)
+        else: process.kill()
+        process.communicate(); raise
+    finally:
+        if job_id:
+            with PROCESS_LOCK: ACTIVE_PROCESSES.pop(job_id,None)
+    with JOBS_LOCK: cancelled=bool(job_id and JOBS.get(job_id,{}).get('status') == 'cancelled')
+    if cancelled: raise RuntimeError('Recognition was cancelled.')
+    mxl=next(output.rglob('*.mxl'),None)
+    if process.returncode or not mxl:
+        diagnostic=(stderr or stdout or 'No diagnostic output').strip()[-6000:]
+        print(f'Audiveris failed ({process.returncode}) for {source.name}:\n{diagnostic}',flush=True)
+        raise RuntimeError('Recognition did not produce a score. Try a clearer, straight-on image.')
+    return mxl
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self,*args,**kwargs): super().__init__(*args,directory=str(ROOT),**kwargs)
     def send_json(self,status,payload):
@@ -285,42 +342,22 @@ class Handler(SimpleHTTPRequestHandler):
                 if quality_assessment.get('confidence') == 'low' and quality_assessment.get('staffLineCount', 10) < 5:
                     raise ValueError('This photo is too unclear to recognize reliably. Fill the frame with one flat page, avoid shadows, and retake it straight on.')
                 source=td_path/('score'+prepared_suffix); source.write_bytes(prepared_bytes); out=td_path/'output'; out.mkdir()
-                command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-swap']
-                if suffix == '.pdf':
-                    command += ['-constant','org.audiveris.omr.image.ImageLoading.pdfResolution=350','-constant','org.audiveris.omr.text.tesseract.TesseractOCR.useOCR=false']
-                command += ['-transcribe','-export','-output',str(out),'--',str(source)]
-                java_env=os.environ.copy()
-                # Leave native-memory headroom for Java, Python, Xvfb, and the
-                # renderer on Render's 512 MB instance. The 350-DPI benchmark
-                # produces the same 601-note result with a 200 MB Java heap.
-                java_env['JAVA_TOOL_OPTIONS']='-Xmx200m -XX:+UseSerialGC'
                 job_id=self.headers.get('X-Job-ID','')
                 stage_started=time.monotonic()
-                process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=java_env,start_new_session=(os.name == 'posix'))
-                if job_id:
-                    with PROCESS_LOCK: ACTIVE_PROCESSES[job_id]=process
-                    with JOBS_LOCK: cancelled_before_start=JOBS.get(job_id,{}).get('status') == 'cancelled'
-                    if cancelled_before_start: stop_job_process(job_id)
-                try:
-                    stdout,stderr=process.communicate(timeout=480)
-                except subprocess.TimeoutExpired:
-                    if os.name == 'posix': os.killpg(process.pid,signal.SIGKILL)
-                    else: process.kill()
-                    process.communicate()
-                    raise
-                finally:
-                    if job_id:
-                        with PROCESS_LOCK: ACTIVE_PROCESSES.pop(job_id,None)
-                with JOBS_LOCK:
-                    cancelled=bool(job_id and JOBS.get(job_id,{}).get('status') == 'cancelled')
-                if cancelled: raise RuntimeError('Recognition was cancelled.')
-                # Audiveris writes book outputs in a score-named subfolder
-                # beneath the configured output directory.
-                mxl=next(out.rglob('*.mxl'),None)
-                if process.returncode or not mxl:
-                    diagnostic=(stderr or stdout or 'No diagnostic output').strip()[-6000:]
-                    print(f'Audiveris failed ({process.returncode}) for {filename}:\n{diagnostic}',flush=True)
-                    raise RuntimeError('Recognition did not produce a score. Try a clearer, straight-on image.')
+                if suffix == '.pdf':
+                    split_dir=td_path/'pdf-pages'; split_dir.mkdir()
+                    split_result=subprocess.run(['pdfseparate',str(source),str(split_dir/'page-%d.pdf')],capture_output=True,text=True,timeout=60)
+                    page_sources=sorted(split_dir.glob('page-*.pdf'),key=lambda p:int(p.stem.rsplit('-',1)[-1]))
+                    if split_result.returncode or not page_sources: raise RuntimeError('The PDF pages could not be separated for recognition.')
+                    page_mxls=[]
+                    for index,page_source in enumerate(page_sources,1):
+                        page_output=out/f'page-{index}'; page_output.mkdir()
+                        page_mxls.append(run_audiveris(binary,page_source,page_output,job_id,pdf_constants=True))
+                    mxl=out/'combined.mxl'
+                    merge_mxl_pages(page_mxls,mxl)
+                    quality_assessment['pageProcessing']='sequential'
+                else:
+                    mxl=run_audiveris(binary,source,out,job_id,pdf_constants=False)
                 timings['recognition']=round(time.monotonic()-stage_started,3)
                 stage_started=time.monotonic()
                 data=parse_musicxml(mxl)
