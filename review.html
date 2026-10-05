@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>LetterScore Test Lab</title>
   <link rel="stylesheet" href="review.css">
+  <style>.timings{display:grid;grid-template-columns:1fr auto;gap:4px 12px;margin:10px 0;color:var(--muted);font-size:9px}.timings strong{color:#d9c7af;font-weight:700}.mode button:disabled{opacity:.35;cursor:not-allowed}</style>
 </head>
 <body>
   <header class="topbar">
@@ -67,9 +68,12 @@
         <div class="stat-row"><span>Recognition mode</span><strong id="statMode">—</strong></div>
         <div class="stat-row"><span>Processing time</span><strong id="statTime">—</strong></div>
         <div class="stat-row"><span>Recognized notes</span><strong id="statNotes">—</strong></div>
+        <div class="stat-row"><span>Recognized measures</span><strong id="statMeasures">—</strong></div>
+        <div class="stat-row"><span>Rhythm-check flags</span><strong id="statSuspects">—</strong></div>
         <div class="stat-row"><span>Total marked errors</span><strong id="statErrors">0</strong></div>
         <div class="stat-row highlight"><span>Estimated note accuracy</span><strong id="statAccuracy">—</strong></div>
         <div class="breakdown" id="breakdown"></div>
+        <div class="timings" id="stageTimings"></div>
         <div class="quality" id="qualityBox"></div>
         <button class="save" id="saveTest">Save this test</button>
         <button class="export" id="exportReport">Download report</button>

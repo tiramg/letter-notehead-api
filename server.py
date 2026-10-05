@@ -4,7 +4,7 @@ from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path
 from urllib.parse import urlparse
-import base64, hashlib, json, os, shutil, signal, subprocess, tempfile, threading, uuid, zipfile
+import base64, hashlib, json, os, shutil, signal, subprocess, tempfile, threading, time, uuid, zipfile
 import urllib.error, urllib.request
 import xml.etree.ElementTree as ET
 from engrave import convert_mxl
@@ -21,7 +21,7 @@ RECOGNITION_LOCK = threading.Lock()
 PROCESS_LOCK = threading.Lock()
 ACTIVE_PROCESSES = {}
 CACHE_DIR = Path(os.environ.get("LETTER_NOTEHEAD_CACHE_DIR", "/tmp/letter-notehead-cache"))
-CACHE_VERSION = "recognition-v4-photo-quality"
+CACHE_VERSION = "recognition-v5-pdf-350"
 CACHE_MAX_BYTES = 120 * 1024 * 1024
 CACHE_MAX_FILES = 4
 
@@ -135,6 +135,36 @@ def parse_musicxml(mxl_path):
     key_guide=('Sharps: '+', '.join(altered)) if fifths > 0 else ('Flats: '+', '.join(altered)) if fifths < 0 else 'No sharps or flats'
     return {"parts":parts,"noteCount":note_count,"measureCount":len(measure_numbers),"durations":sorted(set(durations)),"keyGuide":key_guide}
 
+
+def validate_musicxml(mxl_path):
+    """Flag measures whose exported timeline does not fill the active meter."""
+    with zipfile.ZipFile(mxl_path) as zf:
+        score_name=next(n for n in zf.namelist() if n.endswith('.xml') and not n.startswith('META-INF/'))
+        root=ET.fromstring(zf.read(score_name))
+    suspects=[]
+    for part in root.findall('part'):
+        divisions=1; beats=None; beat_type=None
+        for index,measure in enumerate(part.findall('measure')):
+            divisions=int(measure.findtext('attributes/divisions') or divisions)
+            beats_text=measure.findtext('attributes/time/beats'); type_text=measure.findtext('attributes/time/beat-type')
+            if beats_text and type_text:
+                try: beats=int(beats_text); beat_type=int(type_text)
+                except ValueError: beats=beat_type=None
+            cursor=0; furthest=0; pitched=0
+            for child in measure:
+                duration=int(child.findtext('duration') or 0)
+                if child.tag == 'backup': cursor=max(0,cursor-duration)
+                elif child.tag == 'forward': cursor+=duration; furthest=max(furthest,cursor)
+                elif child.tag == 'note':
+                    if child.find('pitch') is not None: pitched+=1
+                    if child.find('chord') is None and child.find('grace') is None:
+                        cursor+=duration; furthest=max(furthest,cursor)
+            expected=(divisions*beats*4/beat_type) if beats and beat_type else None
+            implicit=measure.attrib.get('implicit') == 'yes' or index == 0
+            if expected and not implicit and furthest < expected*.98:
+                suspects.append({"part":part.attrib.get('id'),"measure":measure.attrib.get('number'),"filled":round(furthest/expected,3),"recognizedNotes":pitched})
+    return {"suspectMeasures":suspects,"suspectMeasureCount":len(suspects),"method":"meter-duration-check"}
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self,*args,**kwargs): super().__init__(*args,directory=str(ROOT),**kwargs)
     def send_json(self,status,payload):
@@ -239,19 +269,28 @@ class Handler(SimpleHTTPRequestHandler):
             quality=(quality_item.get_payload(decode=True).decode('utf-8','ignore').strip() if quality_item else 'fast')
             if quality not in {'fast','best'}: quality='fast'
             score_bytes=item.get_payload(decode=True)
-            cached_path=cache_path(score_bytes,quality)
+            recognition_profile='pdf-optimized-350' if suffix == '.pdf' else quality
+            cached_path=cache_path(score_bytes,recognition_profile)
             cached=read_cached_result(cached_path)
             if cached is not None: return self.send_json(200,cached)
             with tempfile.TemporaryDirectory(prefix='letter-notehead-') as td:
+                timings={}; total_started=time.monotonic(); stage_started=total_started
                 td_path=Path(td)
                 prepared_bytes,prepared_suffix,quality_assessment=prepare_photo(score_bytes,suffix,td_path,quality)
+                timings['preprocessing']=round(time.monotonic()-stage_started,3)
+                if suffix == '.pdf':
+                    quality_assessment={"kind":"document","confidence":"high","profile":"Optimized vector PDF","pdfResolutionDpi":350,"warnings":["Measures flagged by the rhythm check still require visual review."]}
                 if quality_assessment.get('confidence') == 'low' and quality_assessment.get('staffLineCount', 10) < 5:
                     raise ValueError('This photo is too unclear to recognize reliably. Fill the frame with one flat page, avoid shadows, and retake it straight on.')
                 source=td_path/('score'+prepared_suffix); source.write_bytes(prepared_bytes); out=td_path/'output'; out.mkdir()
-                command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-transcribe','-export','-output',str(out),'--',str(source)]
+                command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-swap']
+                if suffix == '.pdf':
+                    command += ['-constant','org.audiveris.omr.image.ImageLoading.pdfResolution=350','-constant','org.audiveris.omr.text.tesseract.TesseractOCR.useOCR=false']
+                command += ['-transcribe','-export','-output',str(out),'--',str(source)]
                 java_env=os.environ.copy()
                 java_env['JAVA_TOOL_OPTIONS']='-Xmx300m -XX:+UseSerialGC'
                 job_id=self.headers.get('X-Job-ID','')
+                stage_started=time.monotonic()
                 process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=java_env,start_new_session=(os.name == 'posix'))
                 if job_id:
                     with PROCESS_LOCK: ACTIVE_PROCESSES[job_id]=process
@@ -277,24 +316,35 @@ class Handler(SimpleHTTPRequestHandler):
                     diagnostic=(stderr or stdout or 'No diagnostic output').strip()[-6000:]
                     print(f'Audiveris failed ({process.returncode}) for {filename}:\n{diagnostic}',flush=True)
                     raise RuntimeError('Recognition did not produce a score. Try a clearer, straight-on image.')
+                timings['recognition']=round(time.monotonic()-stage_started,3)
+                stage_started=time.monotonic()
                 data=parse_musicxml(mxl)
+                validation=validate_musicxml(mxl)
+                timings['scoreAnalysis']=round(time.monotonic()-stage_started,3)
                 title=Path(filename).stem.replace('_',' ').replace('-',' ').strip().title()
                 # Preserve the recognized system layout until the correction UI can safely reflow every score.
                 source_mxl=base64.b64encode(mxl.read_bytes()).decode('ascii')
                 learning_modes={}; renderer=find_musescore()
                 # Prepare the first-shown option now; alternate modes are rendered on demand.
                 for mode,suffix in [('all','all-letters')]:
+                    stage_started=time.monotonic()
                     converted=out/(mxl.stem+f'-{suffix}.mxl')
                     label_count=convert_mxl(mxl,converted,title=title,clean_layout=False,label_mode=mode)
+                    timings['letterConversion']=round(time.monotonic()-stage_started,3)
                     result={"labelCount":label_count,"mxl":base64.b64encode(converted.read_bytes()).decode('ascii'),"pdf":None,"preview":None,"pages":[],"lines":[]}
                     if renderer:
+                        stage_started=time.monotonic()
                         rendered=out/(mxl.stem+f'-{suffix}.pdf'); render_pdf(converted,rendered)
+                        timings['pdfRendering']=round(time.monotonic()-stage_started,3)
                         result['pdf']=base64.b64encode(rendered.read_bytes()).decode('ascii')
+                        stage_started=time.monotonic()
                         pages,lines=render_pages_and_lines(rendered,out/(mxl.stem+f'-{suffix}-images'))
+                        timings['previewRendering']=round(time.monotonic()-stage_started,3)
                         result['pages']=[base64.b64encode(p.read_bytes()).decode('ascii') for p in pages]
                         result['lines']=[base64.b64encode(p.read_bytes()).decode('ascii') for p in lines]
                         result['preview']=result['pages'][0] if result['pages'] else None
                     learning_modes[mode]=result
+                timings['total']=round(time.monotonic()-total_started,3)
             primary=learning_modes['all']
             if quality_assessment.get('kind') == 'photo':
                 quality_assessment['recognizedNotes'] = data['noteCount']
@@ -302,7 +352,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if data['noteCount'] < 8 or data['measureCount'] < 1:
                     quality_assessment['confidence'] = 'low'
                     quality_assessment['warnings'].insert(0, 'Recognition found too little musical content to trust this result.')
-            data.update({"fileName":filename,"engine":"Audiveris","recognitionMode":quality,"cacheHit":False,"reviewRequired":True,"qualityAssessment":quality_assessment,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"sourceMxl":source_mxl,"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
+            data.update({"fileName":filename,"engine":"Audiveris","recognitionMode":recognition_profile,"cacheHit":False,"reviewRequired":True,"qualityAssessment":quality_assessment,"validation":validation,"stageTimings":timings,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"sourceMxl":source_mxl,"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
             write_cached_result(cached_path,data)
             return self.send_json(200,data)
         except subprocess.TimeoutExpired: return self.send_json(504,{"error":"Recognition took longer than eight minutes."})

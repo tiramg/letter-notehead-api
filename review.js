@@ -15,6 +15,9 @@ $('#scoreFile').onchange=event=>{
   if(!file)return;
   $('#originalTitle').textContent=file.name;
   const url=URL.createObjectURL(file),isPdf=file.type==='application/pdf'||/\.pdf$/i.test(file.name);
+  const fastButton=$('[data-mode="fast"]'),bestButton=$('[data-mode="best"]');
+  bestButton.disabled=isPdf;fastButton.innerHTML=isPdf?'◎ Optimized PDF':'⚡ Fast';
+  if(isPdf){mode='fast';document.querySelectorAll('[data-mode]').forEach(item=>item.classList.toggle('selected',item===fastButton))}
   $('#originalImage').style.display=isPdf?'none':'block';$('#originalPdf').style.display=isPdf?'block':'none';
   if(isPdf)$('#originalPdf').src=url;else $('#originalImage').src=url;
 };
@@ -29,7 +32,7 @@ $('#runTest').onclick=async()=>{
     const body=new FormData();body.append('score',file);body.append('recognitionMode',mode);
     const response=await fetch('/api/recognize-async',{method:'POST',headers:auth(),body});const submitted=await json(response,'Upload');
     if(!response.ok)throw new Error(submitted.error||'Recognition could not be started.');jobId=submitted.jobId;
-    $('#statusTitle').textContent=`${mode==='best'?'Best Accuracy':'Fast'} recognition`;$('#statusText').textContent='Reading staves, notes, rhythm, and measures…';$('#progressBar').style.width='32%';
+    $('#statusTitle').textContent=`${file.type==='application/pdf'||/\.pdf$/i.test(file.name)?'Optimized PDF':mode==='best'?'Best Accuracy':'Fast'} recognition`;$('#statusText').textContent='Reading staves, notes, rhythm, and measures…';$('#progressBar').style.width='32%';
     while(true){
       await wait(4000);const check=await fetch('/api/jobs/'+encodeURIComponent(jobId),{headers:auth()});const state=await json(check,'Job status');
       if(!check.ok)throw new Error(state.error||'The recognition job could not be found.');
@@ -46,7 +49,10 @@ $('#cancelTest').onclick=async()=>{if(!jobId)return;const response=await fetch(`
 function pages(){return result?.learningModes?.all?.pages||[]}
 function showResult(){
   $('#workspace').hidden=false;$('#reviewPanel').hidden=false;$('#resultTitle').textContent=(result.fileName||file.name).replace(/\.[^.]+$/,'');
-  $('#statMode').textContent=mode==='best'?'Best Accuracy':'Fast';$('#statTime').textContent=formatTime(duration);$('#statNotes').textContent=result.noteCount??'—';
+  $('#statMode').textContent=result.recognitionMode==='pdf-optimized-350'?'Optimized PDF':mode==='best'?'Best Accuracy':'Fast';$('#statTime').textContent=formatTime(duration);$('#statNotes').textContent=result.noteCount??'—';
+  $('#statMeasures').textContent=result.measureCount??'—';$('#statSuspects').textContent=result.validation?.suspectMeasureCount??'—';
+  const labels={preprocessing:'Preprocessing',recognition:'Recognition',scoreAnalysis:'Score check',letterConversion:'Letter conversion',pdfRendering:'PDF rendering',previewRendering:'Preview rendering',total:'Server total'};
+  $('#stageTimings').innerHTML=Object.entries(result.stageTimings||{}).map(([key,value])=>`<span>${labels[key]||key}</span><strong>${Number(value).toFixed(1)}s</strong>`).join('');
   const quality=result.qualityAssessment;$('#qualityBox').innerHTML=quality?`<strong>${(quality.confidence||'medium').toUpperCase()} CONFIDENCE</strong><br>${(quality.warnings||[]).join('<br>')}`:'Document source · visual review still recommended';
   page=0;zoom=1;renderPage();updateStats();
 }
@@ -76,9 +82,9 @@ function updateStats(){
   $('#statErrors').textContent=marks.length;const score=accuracy();$('#statAccuracy').textContent=score===null?'—':score.toFixed(1)+'%';
   const totals=counts();$('#breakdown').innerHTML=Object.entries(totals).filter(([,value])=>value).map(([key,value])=>`<span>${categories[key]}: ${value}</span>`).join('')||'<span>No errors marked yet</span>';
 }
-function report(){return {app:'LetterScore Test Lab',version:1,fileName:file?.name,sourceType:file?.type||'',recognitionMode:mode,processingMilliseconds:duration,processingTime:formatTime(duration),recognizedNotes:result?.noteCount??null,recognizedMeasures:result?.measureCount??null,pages:pages().length,confidence:result?.qualityAssessment?.confidence||null,totalErrors:marks.length,estimatedNoteAccuracy:accuracy(),errorCounts:counts(),errors:marks,notes:$('#testNotes').value.trim(),testedAt:new Date().toISOString()}}
+function report(){return {app:'LetterScore Test Lab',version:2,fileName:file?.name,sourceType:file?.type||'',recognitionMode:result?.recognitionMode||mode,processingMilliseconds:duration,processingTime:formatTime(duration),serverStageTimings:result?.stageTimings||null,rhythmCheck:result?.validation||null,recognizedNotes:result?.noteCount??null,recognizedMeasures:result?.measureCount??null,pages:pages().length,confidence:result?.qualityAssessment?.confidence||null,totalErrors:marks.length,estimatedNoteAccuracy:accuracy(),errorCounts:counts(),errors:marks,notes:$('#testNotes').value.trim(),testedAt:new Date().toISOString()}}
 $('#saveTest').onclick=()=>{if(!result)return;const history=JSON.parse(localStorage.getItem('letterScoreBenchmarks')||'[]');history.unshift(report());localStorage.setItem('letterScoreBenchmarks',JSON.stringify(history.slice(0,30)));renderHistory();toast('Test saved for comparison')};
 $('#exportReport').onclick=()=>{if(!result)return;const blob=new Blob([JSON.stringify(report(),null,2)],{type:'application/json'}),link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=`LetterScore-${mode}-${file.name.replace(/\.[^.]+$/,'')}-report.json`;link.click();URL.revokeObjectURL(link.href);toast('Report downloaded')};
-function renderHistory(){const history=JSON.parse(localStorage.getItem('letterScoreBenchmarks')||'[]'),body=$('#historyTable tbody');$('#historyEmpty').hidden=history.length>0;$('#historyTable').hidden=!history.length;body.innerHTML=history.map(test=>`<tr><td>${test.fileName||'Score'}</td><td>${test.recognitionMode==='best'?'Best':'Fast'}</td><td>${test.processingTime}</td><td>${test.totalErrors}</td><td>${test.estimatedNoteAccuracy==null?'—':test.estimatedNoteAccuracy.toFixed(1)+'%'}</td><td>${new Date(test.testedAt).toLocaleDateString()}</td></tr>`).join('')}
+function renderHistory(){const history=JSON.parse(localStorage.getItem('letterScoreBenchmarks')||'[]'),body=$('#historyTable tbody');$('#historyEmpty').hidden=history.length>0;$('#historyTable').hidden=!history.length;body.innerHTML=history.map(test=>`<tr><td>${test.fileName||'Score'}</td><td>${test.recognitionMode==='pdf-optimized-350'?'Optimized PDF':test.recognitionMode==='best'?'Best':'Fast'}</td><td>${test.processingTime}</td><td>${test.totalErrors}</td><td>${test.estimatedNoteAccuracy==null?'—':test.estimatedNoteAccuracy.toFixed(1)+'%'}</td><td>${new Date(test.testedAt).toLocaleDateString()}</td></tr>`).join('')}
 $('#clearHistory').onclick=()=>{if(confirm('Clear all saved LetterScore benchmarks from this browser?')){localStorage.removeItem('letterScoreBenchmarks');renderHistory()}};
 renderHistory();
