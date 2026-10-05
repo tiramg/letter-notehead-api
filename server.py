@@ -292,8 +292,8 @@ class Handler(SimpleHTTPRequestHandler):
                 java_env=os.environ.copy()
                 # Leave native-memory headroom for Java, Python, Xvfb, and the
                 # renderer on Render's 512 MB instance. The 350-DPI benchmark
-                # produces the same 601-note result with a 260 MB Java heap.
-                java_env['JAVA_TOOL_OPTIONS']='-Xmx260m -XX:+UseSerialGC'
+                # produces the same 601-note result with a 200 MB Java heap.
+                java_env['JAVA_TOOL_OPTIONS']='-Xmx200m -XX:+UseSerialGC'
                 job_id=self.headers.get('X-Job-ID','')
                 stage_started=time.monotonic()
                 process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=java_env,start_new_session=(os.name == 'posix'))
