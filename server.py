@@ -201,7 +201,7 @@ def run_audiveris(binary, source, output, job_id, pdf_constants=False):
     if pdf_constants:
         command += ['-constant','org.audiveris.omr.image.ImageLoading.pdfResolution=350','-constant','org.audiveris.omr.text.tesseract.TesseractOCR.useOCR=false']
     command += ['-transcribe','-export','-output',str(output),'--',str(source)]
-    java_env=os.environ.copy(); java_env['JAVA_TOOL_OPTIONS']='-Xmx200m -XX:+UseSerialGC'
+    java_env=os.environ.copy(); java_env['JAVA_TOOL_OPTIONS']='-Xmx128m -XX:+UseSerialGC'
     process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=java_env,start_new_session=(os.name == 'posix'))
     if job_id:
         with PROCESS_LOCK: ACTIVE_PROCESSES[job_id]=process
