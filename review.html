@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LetterScore Test Lab</title>
+  <link rel="stylesheet" href="review.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><span class="brand-note">C E G</span><strong>LetterScore</strong><small>TEST LAB</small></div>
+    <p>Desktop recognition benchmark</p>
+  </header>
+
+  <main>
+    <section class="setup card">
+      <div>
+        <label class="file-pick">Choose score<input id="scoreFile" type="file" accept="application/pdf,image/*"></label>
+        <span id="fileName">No file selected</span>
+      </div>
+      <div class="mode" role="group" aria-label="Recognition mode">
+        <button class="selected" data-mode="fast">⚡ Fast</button>
+        <button data-mode="best">◎ Best Accuracy</button>
+      </div>
+      <button class="run" id="runTest" disabled>Run recognition test</button>
+      <button class="cancel" id="cancelTest" hidden>Cancel</button>
+    </section>
+
+    <section class="status card" id="statusCard" hidden>
+      <div><strong id="statusTitle">Uploading score</strong><span id="elapsed">0:00</span></div>
+      <p id="statusText">Preparing the test…</p>
+      <div class="progress"><i id="progressBar"></i></div>
+    </section>
+
+    <section class="workspace" id="workspace" hidden>
+      <div class="viewer-card card">
+        <header><div><small>ORIGINAL</small><strong id="originalTitle">Source score</strong></div><div class="zoom"><button data-zoom="out">−</button><span id="zoomValue">100%</span><button data-zoom="in">＋</button></div></header>
+        <div class="viewer" id="originalViewer"><img id="originalImage" alt="Original score"><iframe id="originalPdf" title="Original PDF"></iframe></div>
+      </div>
+
+      <div class="viewer-card card">
+        <header><div><small>LETTERSCORE RESULT</small><strong id="resultTitle">Converted score</strong></div><div class="pager"><button id="previousPage">←</button><span id="pageCounter">Page 1 of 1</span><button id="nextPage">→</button></div></header>
+        <div class="viewer result-viewer" id="resultViewer"><div class="score-layer" id="scoreLayer"><img id="resultImage" alt="Converted score"><div id="markers"></div></div></div>
+      </div>
+    </section>
+
+    <section class="review-grid" id="reviewPanel" hidden>
+      <div class="card tools">
+        <h2>Mark recognition errors</h2>
+        <p>Select an error type, then click its location on the converted score. Click a marker to remove it.</p>
+        <label class="measure">Measure number <input id="measureNumber" inputmode="numeric" placeholder="Optional"></label>
+        <div class="categories" id="categories">
+          <button class="selected" data-category="extraNote">Extra note</button>
+          <button data-category="missingNote">Missing note</button>
+          <button data-category="wrongPitch">Wrong pitch</button>
+          <button data-category="accidental">Sharp / flat</button>
+          <button data-category="rhythm">Rhythm</button>
+          <button data-category="chord">Chord</button>
+          <button data-category="rest">Rest</button>
+          <button data-category="layout">Layout / other</button>
+        </div>
+        <label class="notes">Test notes<textarea id="testNotes" placeholder="Anything else you notice…"></textarea></label>
+      </div>
+
+      <div class="card statistics">
+        <h2>Test statistics</h2>
+        <div class="stat-row"><span>Recognition mode</span><strong id="statMode">—</strong></div>
+        <div class="stat-row"><span>Processing time</span><strong id="statTime">—</strong></div>
+        <div class="stat-row"><span>Recognized notes</span><strong id="statNotes">—</strong></div>
+        <div class="stat-row"><span>Total marked errors</span><strong id="statErrors">0</strong></div>
+        <div class="stat-row highlight"><span>Estimated note accuracy</span><strong id="statAccuracy">—</strong></div>
+        <div class="breakdown" id="breakdown"></div>
+        <div class="quality" id="qualityBox"></div>
+        <button class="save" id="saveTest">Save this test</button>
+        <button class="export" id="exportReport">Download report</button>
+      </div>
+    </section>
+
+    <section class="card history">
+      <div class="history-head"><div><small>SAVED BENCHMARKS</small><h2>Fast vs. Best comparison</h2></div><button id="clearHistory">Clear</button></div>
+      <div class="empty" id="historyEmpty">Complete and save tests to compare results.</div>
+      <div class="table-wrap"><table id="historyTable" hidden><thead><tr><th>File</th><th>Mode</th><th>Time</th><th>Errors</th><th>Accuracy</th><th>Date</th></tr></thead><tbody></tbody></table></div>
+    </section>
+  </main>
+  <div class="toast" id="toast"></div>
+  <script src="review-config.js"></script>
+  <script src="review.js"></script>
+</body>
+</html>

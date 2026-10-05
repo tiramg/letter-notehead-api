@@ -45,7 +45,7 @@ RUN curl -fL "$(cat /tmp/musescore-url)" -o /tmp/musescore.AppImage \
     && rm /tmp/musescore.AppImage /tmp/musescore-url
 
 WORKDIR /app
-COPY server.py engrave.py render.py photo_prep.py start-cloud.sh ./
+COPY server.py engrave.py render.py photo_prep.py review.html review.css review.js start-cloud.sh ./
 RUN chmod +x start-cloud.sh
 
 EXPOSE 10000

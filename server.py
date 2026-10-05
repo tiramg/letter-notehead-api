@@ -14,6 +14,7 @@ from photo_prep import prepare_photo
 ROOT = Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", os.environ.get("LETTER_NOTEHEAD_PORT", "10000")))
 API_TOKEN = os.environ.get("LETTER_NOTEHEAD_API_TOKEN", "").strip()
+REVIEW_PASSWORD = os.environ.get("LETTER_NOTEHEAD_REVIEW_PASSWORD", "").strip()
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 RECOGNITION_LOCK = threading.Lock()
@@ -142,8 +143,23 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_response(204); self.send_header('Access-Control-Allow-Origin','*'); self.send_header('Access-Control-Allow-Headers','Authorization, Content-Type'); self.send_header('Access-Control-Allow-Methods','GET, POST, OPTIONS'); self.end_headers()
     def authorized(self):
         return not API_TOKEN or self.headers.get('Authorization','') == 'Bearer '+API_TOKEN
+    def review_authorized(self):
+        if not REVIEW_PASSWORD: return True
+        expected='Basic '+base64.b64encode(('letterscore:'+REVIEW_PASSWORD).encode()).decode()
+        return self.headers.get('Authorization','') == expected
+    def require_review_auth(self):
+        self.send_response(401); self.send_header('WWW-Authenticate','Basic realm="LetterScore Test Lab"'); self.send_header('Cache-Control','no-store'); self.end_headers()
     def do_GET(self):
         path=urlparse(self.path).path
+        if path in {'/review','/review.html','/review.css','/review.js','/review-config.js'} and not self.review_authorized():
+            return self.require_review_auth()
+        if path == '/review':
+            self.send_response(302); self.send_header('Location','/review.html'); self.end_headers(); return
+        if path in {'/review.html','/review.css','/review.js'}:
+            return super().do_GET()
+        if path == '/review-config.js':
+            body=("window.LETTERSCORE_REVIEW_CONFIG="+json.dumps({"apiToken":API_TOKEN})+";").encode()
+            self.send_response(200); self.send_header('Content-Type','application/javascript'); self.send_header('Cache-Control','no-store'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); return
         if path.startswith('/api/jobs/'):
             if not self.authorized(): return self.send_json(401,{"error":"Unauthorized"})
             job_id=path.rsplit('/',1)[-1]
