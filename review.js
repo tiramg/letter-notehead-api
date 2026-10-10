@@ -10,7 +10,7 @@ function formatTime(ms){const seconds=Math.round(ms/1000);return `${Math.floor(s
 async function json(response,context){const text=await response.text();try{return JSON.parse(text)}catch(error){throw new Error(`${context} returned an unreadable response (${response.status}).`)}}
 
 $('#scoreFile').onchange=event=>{
-  file=event.target.files[0]||null;result=null;marks=[];
+  file=event.target.files[0]||null;result=null;marks=[];$('#reviewComplete').checked=false;
   $('#fileName').textContent=file?.name||'No file selected';$('#runTest').disabled=!file;
   if(!file)return;
   $('#originalTitle').textContent=file.name;
@@ -24,7 +24,7 @@ $('#scoreFile').onchange=event=>{
 document.querySelectorAll('[data-mode]').forEach(button=>button.onclick=()=>{mode=button.dataset.mode;document.querySelectorAll('[data-mode]').forEach(item=>item.classList.toggle('selected',item===button))});
 
 $('#runTest').onclick=async()=>{
-  if(!file)return;marks=[];result=null;page=0;startTime=Date.now();
+  if(!file)return;marks=[];result=null;page=0;$('#reviewComplete').checked=false;startTime=Date.now();
   $('#statusCard').hidden=false;$('#workspace').hidden=true;$('#reviewPanel').hidden=true;$('#runTest').disabled=true;$('#cancelTest').hidden=false;
   $('#statusTitle').textContent='Uploading score';$('#statusText').textContent='Sending the source to LetterScore…';$('#progressBar').style.width='12%';
   timer=setInterval(()=>{$('#elapsed').textContent=formatTime(Date.now()-startTime)},1000);
@@ -77,14 +77,21 @@ function renderMarkers(){
   document.querySelectorAll('.marker').forEach(marker=>marker.onclick=event=>{event.stopPropagation();marks=marks.filter(mark=>String(mark.id)!==marker.dataset.id);renderMarkers();updateStats()});
 }
 function counts(){return Object.fromEntries(Object.keys(categories).map(key=>[key,marks.filter(mark=>mark.category===key).length]))}
-function accuracy(){const notes=Number(result?.noteCount)||0;return notes?Math.max(0,(1-marks.length/notes)*100):null}
+function accuracy(){
+  if(!$('#reviewComplete').checked)return null;
+  const notes=Number(result?.noteCount)||0,totals=counts();
+  const sourceNotes=notes-totals.extraNote+totals.missingNote;
+  const errors=totals.extraNote+totals.missingNote+totals.wrongPitch+totals.accidental;
+  return sourceNotes>0?Math.max(0,(1-errors/sourceNotes)*100):null;
+}
+$('#reviewComplete').onchange=updateStats;
 function updateStats(){
-  $('#statErrors').textContent=marks.length;const score=accuracy();$('#statAccuracy').textContent=score===null?'—':score.toFixed(1)+'%';
+  $('#statErrors').textContent=marks.length;const score=accuracy();$('#statAccuracy').textContent=score===null?'Review incomplete':score.toFixed(1)+'%';
   const totals=counts();$('#breakdown').innerHTML=Object.entries(totals).filter(([,value])=>value).map(([key,value])=>`<span>${categories[key]}: ${value}</span>`).join('')||'<span>No errors marked yet</span>';
 }
-function report(){return {app:'LetterScore Test Lab',version:2,fileName:file?.name,sourceType:file?.type||'',recognitionMode:result?.recognitionMode||mode,processingMilliseconds:duration,processingTime:formatTime(duration),serverStageTimings:result?.stageTimings||null,rhythmCheck:result?.validation||null,recognizedNotes:result?.noteCount??null,recognizedMeasures:result?.measureCount??null,pages:pages().length,confidence:result?.qualityAssessment?.confidence||null,totalErrors:marks.length,estimatedNoteAccuracy:accuracy(),errorCounts:counts(),errors:marks,notes:$('#testNotes').value.trim(),testedAt:new Date().toISOString()}}
+function report(){return {app:'LetterScore Test Lab',version:3,reviewComplete:$('#reviewComplete').checked,accuracyMethod:'marked-note-errors/source-note-estimate',fileName:file?.name,sourceType:file?.type||'',recognitionMode:result?.recognitionMode||mode,processingMilliseconds:duration,processingTime:formatTime(duration),serverStageTimings:result?.stageTimings||null,rhythmCheck:result?.validation||null,recognizedNotes:result?.noteCount??null,recognizedMeasures:result?.measureCount??null,pages:pages().length,confidence:result?.qualityAssessment?.confidence||null,qualityAssessment:result?.qualityAssessment||null,totalErrors:marks.length,estimatedNoteAccuracy:accuracy(),errorCounts:counts(),errors:marks,notes:$('#testNotes').value.trim(),testedAt:new Date().toISOString()}}
 $('#saveTest').onclick=()=>{if(!result)return;const history=JSON.parse(localStorage.getItem('letterScoreBenchmarks')||'[]');history.unshift(report());localStorage.setItem('letterScoreBenchmarks',JSON.stringify(history.slice(0,30)));renderHistory();toast('Test saved for comparison')};
 $('#exportReport').onclick=()=>{if(!result)return;const blob=new Blob([JSON.stringify(report(),null,2)],{type:'application/json'}),link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=`LetterScore-${mode}-${file.name.replace(/\.[^.]+$/,'')}-report.json`;link.click();URL.revokeObjectURL(link.href);toast('Report downloaded')};
-function renderHistory(){const history=JSON.parse(localStorage.getItem('letterScoreBenchmarks')||'[]'),body=$('#historyTable tbody');$('#historyEmpty').hidden=history.length>0;$('#historyTable').hidden=!history.length;body.innerHTML=history.map(test=>`<tr><td>${test.fileName||'Score'}</td><td>${test.recognitionMode==='pdf-optimized-350'?'Optimized PDF':test.recognitionMode==='best'?'Best':'Fast'}</td><td>${test.processingTime}</td><td>${test.totalErrors}</td><td>${test.estimatedNoteAccuracy==null?'—':test.estimatedNoteAccuracy.toFixed(1)+'%'}</td><td>${new Date(test.testedAt).toLocaleDateString()}</td></tr>`).join('')}
+function renderHistory(){const history=JSON.parse(localStorage.getItem('letterScoreBenchmarks')||'[]'),body=$('#historyTable tbody');$('#historyEmpty').hidden=history.length>0;$('#historyTable').hidden=!history.length;body.innerHTML=history.map(test=>`<tr><td>${test.fileName||'Score'}</td><td>${test.recognitionMode==='pdf-optimized-350'?'Optimized PDF':test.recognitionMode==='best'?'Best':'Fast'}</td><td>${test.processingTime}</td><td>${test.totalErrors}</td><td>${test.reviewComplete!==true?'Unverified':test.estimatedNoteAccuracy==null?'—':test.estimatedNoteAccuracy.toFixed(1)+'%'}</td><td>${new Date(test.testedAt).toLocaleDateString()}</td></tr>`).join('')}
 $('#clearHistory').onclick=()=>{if(confirm('Clear all saved LetterScore benchmarks from this browser?')){localStorage.removeItem('letterScoreBenchmarks');renderHistory()}};
 renderHistory();
