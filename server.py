@@ -21,7 +21,7 @@ RECOGNITION_LOCK = threading.Lock()
 PROCESS_LOCK = threading.Lock()
 ACTIVE_PROCESSES = {}
 CACHE_DIR = Path(os.environ.get("LETTER_NOTEHEAD_CACHE_DIR", "/tmp/letter-notehead-cache"))
-CACHE_VERSION = "recognition-v6-pdf-sequential"
+CACHE_VERSION = "recognition-v8-photo-adaptive72"
 CACHE_MAX_BYTES = 120 * 1024 * 1024
 CACHE_MAX_FILES = 4
 
@@ -139,33 +139,55 @@ def parse_musicxml(mxl_path):
 
 
 def validate_musicxml(mxl_path):
-    """Flag measures whose exported timeline does not fill the active meter."""
+    """Flag incomplete musical timelines on each staff, including silent losses.
+
+    This is a review aid, not an accuracy measurement: complete but wrong notes
+    can still pass. Cross-staff notation can also legitimately trigger review.
+    """
     with zipfile.ZipFile(mxl_path) as zf:
         score_name=next(n for n in zf.namelist() if n.endswith('.xml') and not n.startswith('META-INF/'))
         root=ET.fromstring(zf.read(score_name))
     suspects=[]
     for part in root.findall('part'):
-        divisions=1; beats=None; beat_type=None
+        divisions=1; beats=None; beat_type=None; staves=1
         for index,measure in enumerate(part.findall('measure')):
             divisions=int(measure.findtext('attributes/divisions') or divisions)
+            staves=int(measure.findtext('attributes/staves') or staves)
             beats_text=measure.findtext('attributes/time/beats'); type_text=measure.findtext('attributes/time/beat-type')
             if beats_text and type_text:
-                try: beats=int(beats_text); beat_type=int(type_text)
+                try: beats=sum(int(value) for value in beats_text.split('+')); beat_type=int(type_text)
                 except ValueError: beats=beat_type=None
-            cursor=0; furthest=0; pitched=0
+            cursor=0; chord_start=0; pitched=0
+            intervals={str(staff):[] for staff in range(1,staves+1)}
             for child in measure:
                 duration=int(child.findtext('duration') or 0)
                 if child.tag == 'backup': cursor=max(0,cursor-duration)
-                elif child.tag == 'forward': cursor+=duration; furthest=max(furthest,cursor)
+                elif child.tag == 'forward': cursor+=duration
                 elif child.tag == 'note':
                     if child.find('pitch') is not None: pitched+=1
-                    if child.find('chord') is None and child.find('grace') is None:
-                        cursor+=duration; furthest=max(furthest,cursor)
+                    if child.find('grace') is not None: continue
+                    if child.find('chord') is None:
+                        chord_start=cursor; cursor+=duration
+                    staff=child.findtext('staff') or '1'
+                    if duration:
+                        whole_rest=child.find('rest') is not None and child.find('rest').get('measure') == 'yes'
+                        start=0 if whole_rest else chord_start
+                        intervals.setdefault(staff,[]).append((start,start+duration))
             expected=(divisions*beats*4/beat_type) if beats and beat_type else None
             implicit=measure.attrib.get('implicit') == 'yes' or index == 0
-            if expected and not implicit and furthest < expected*.98:
-                suspects.append({"part":part.attrib.get('id'),"measure":measure.attrib.get('number'),"filled":round(furthest/expected,3),"recognizedNotes":pitched})
-    return {"suspectMeasures":suspects,"suspectMeasureCount":len(suspects),"method":"meter-duration-check"}
+            if not expected or implicit: continue
+            incomplete=[]
+            for staff,spans in intervals.items():
+                covered=0; end=0
+                for left,right in sorted(spans):
+                    left=max(0,left); right=min(expected,right)
+                    if right > max(end,left): covered+=right-max(end,left)
+                    end=max(end,right)
+                if covered < expected*.98:
+                    incomplete.append({"staff":staff,"filled":round(covered/expected,3)})
+            if incomplete:
+                suspects.append({"part":part.attrib.get('id'),"measure":measure.attrib.get('number'),"filled":min(item['filled'] for item in incomplete),"recognizedNotes":pitched,"staves":incomplete})
+    return {"suspectMeasures":suspects,"suspectMeasureCount":len(suspects),"method":"per-staff-duration-check"}
 
 
 def merge_mxl_pages(page_paths, destination):
@@ -196,10 +218,14 @@ def merge_mxl_pages(page_paths, destination):
         output_zip.writestr(score_name,ET.tostring(merged,encoding='utf-8',xml_declaration=True))
 
 
-def run_audiveris(binary, source, output, job_id, pdf_constants=False):
+def run_audiveris(binary, source, output, job_id, pdf_constants=False, photo_quality=None):
     command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-swap']
     if pdf_constants:
         command += ['-constant','org.audiveris.omr.image.ImageLoading.pdfResolution=350','-constant','org.audiveris.omr.text.tesseract.TesseractOCR.useOCR=false']
+    elif photo_quality == 'best':
+        # A small threshold increase retains faint/hollow photo noteheads.
+        # This profile is experimental and does not change PDF or Fast mode.
+        command += ['-constant','org.audiveris.omr.image.AdaptiveDescriptor.meanCoeff=0.72']
     command += ['-transcribe','-export','-output',str(output),'--',str(source)]
     java_env=os.environ.copy(); java_env['JAVA_TOOL_OPTIONS']='-Xmx128m -XX:+UseSerialGC'
     process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=java_env,start_new_session=(os.name == 'posix'))
@@ -357,7 +383,10 @@ class Handler(SimpleHTTPRequestHandler):
                     merge_mxl_pages(page_mxls,mxl)
                     quality_assessment['pageProcessing']='sequential'
                 else:
-                    mxl=run_audiveris(binary,source,out,job_id,pdf_constants=False)
+                    mxl=run_audiveris(binary,source,out,job_id,pdf_constants=False,photo_quality=quality)
+                    quality_assessment['profile']='photo-adaptive72-experimental' if quality == 'best' else 'photo-standard'
+                    if quality == 'best':
+                        quality_assessment['warnings'].insert(0, 'Experimental photo profile: recognition can still add or omit notes. Compare the converted score with the original.')
                 timings['recognition']=round(time.monotonic()-stage_started,3)
                 stage_started=time.monotonic()
                 data=parse_musicxml(mxl)
@@ -391,6 +420,10 @@ class Handler(SimpleHTTPRequestHandler):
             if quality_assessment.get('kind') == 'photo':
                 quality_assessment['recognizedNotes'] = data['noteCount']
                 quality_assessment['recognizedMeasures'] = data['measureCount']
+                if validation['suspectMeasureCount']:
+                    quality_assessment['confidence'] = 'low'
+                    flagged=', '.join(item['measure'] for item in validation['suspectMeasures'])
+                    quality_assessment['warnings'].insert(0, f'Incomplete staff timelines in measures {flagged}. Missing notes or rhythm errors may be present. These flags require visual review.')
                 if data['noteCount'] < 8 or data['measureCount'] < 1:
                     quality_assessment['confidence'] = 'low'
                     quality_assessment['warnings'].insert(0, 'Recognition found too little musical content to trust this result.')

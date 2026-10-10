@@ -1,0 +1,15 @@
+const assert=require('node:assert/strict');
+const vm=require('node:vm');
+const fs=require('node:fs');
+const nodes=new Map();
+const node=id=>{if(!nodes.has(id))nodes.set(id,{checked:false,classList:{add(){},remove(){},toggle(){}},style:{},value:''});return nodes.get(id)};
+const context=vm.createContext({window:{},document:{querySelector:node,querySelectorAll:()=>[]},localStorage:{getItem:()=>null},console});
+vm.runInContext(fs.readFileSync('review.js','utf8'),context);
+vm.runInContext('result={noteCount:118};marks=[];',context);
+assert.equal(vm.runInContext('accuracy()',context),null);
+assert.equal(vm.runInContext('report().reviewComplete',context),false);
+node('#reviewComplete').checked=true;
+assert.equal(vm.runInContext('accuracy()',context),100);
+vm.runInContext("marks=[{category:'missingNote'},{category:'extraNote'},{category:'layout'}];",context);
+assert.equal(vm.runInContext('accuracy()',context),100*(1-2/118));
+console.log('Review completion and note-estimate checks passed');
