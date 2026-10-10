@@ -21,7 +21,7 @@ RECOGNITION_LOCK = threading.Lock()
 PROCESS_LOCK = threading.Lock()
 ACTIVE_PROCESSES = {}
 CACHE_DIR = Path(os.environ.get("LETTER_NOTEHEAD_CACHE_DIR", "/tmp/letter-notehead-cache"))
-CACHE_VERSION = "recognition-v7-staff-validation"
+CACHE_VERSION = "recognition-v8-photo-adaptive72"
 CACHE_MAX_BYTES = 120 * 1024 * 1024
 CACHE_MAX_FILES = 4
 
@@ -218,10 +218,14 @@ def merge_mxl_pages(page_paths, destination):
         output_zip.writestr(score_name,ET.tostring(merged,encoding='utf-8',xml_declaration=True))
 
 
-def run_audiveris(binary, source, output, job_id, pdf_constants=False):
+def run_audiveris(binary, source, output, job_id, pdf_constants=False, photo_quality=None):
     command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-swap']
     if pdf_constants:
         command += ['-constant','org.audiveris.omr.image.ImageLoading.pdfResolution=350','-constant','org.audiveris.omr.text.tesseract.TesseractOCR.useOCR=false']
+    elif photo_quality == 'best':
+        # A small threshold increase retains faint/hollow photo noteheads.
+        # This profile is experimental and does not change PDF or Fast mode.
+        command += ['-constant','org.audiveris.omr.image.AdaptiveDescriptor.meanCoeff=0.72']
     command += ['-transcribe','-export','-output',str(output),'--',str(source)]
     java_env=os.environ.copy(); java_env['JAVA_TOOL_OPTIONS']='-Xmx128m -XX:+UseSerialGC'
     process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=java_env,start_new_session=(os.name == 'posix'))
@@ -379,7 +383,10 @@ class Handler(SimpleHTTPRequestHandler):
                     merge_mxl_pages(page_mxls,mxl)
                     quality_assessment['pageProcessing']='sequential'
                 else:
-                    mxl=run_audiveris(binary,source,out,job_id,pdf_constants=False)
+                    mxl=run_audiveris(binary,source,out,job_id,pdf_constants=False,photo_quality=quality)
+                    quality_assessment['profile']='photo-adaptive72-experimental' if quality == 'best' else 'photo-standard'
+                    if quality == 'best':
+                        quality_assessment['warnings'].insert(0, 'Experimental photo profile: recognition can still add or omit notes. Compare the converted score with the original.')
                 timings['recognition']=round(time.monotonic()-stage_started,3)
                 stage_started=time.monotonic()
                 data=parse_musicxml(mxl)
