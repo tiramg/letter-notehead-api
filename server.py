@@ -328,7 +328,8 @@ class Handler(SimpleHTTPRequestHandler):
                     result={"labelCount":label_count,"mxl":base64.b64encode(converted.read_bytes()).decode('ascii'),"pdf":None,"preview":None,"pages":[],"lines":[]}
                     renderer=find_musescore()
                     if renderer:
-                        rendered=Path(td)/f'{suffix}.pdf'; render_pdf(converted,rendered)
+                        result['warnings']=[]
+                        rendered=Path(td)/f'{suffix}.pdf'; render_pdf(converted,rendered,warnings=result['warnings'])
                         result['pdf']=base64.b64encode(rendered.read_bytes()).decode('ascii')
                         pages,lines=render_pages_and_lines(rendered,Path(td)/f'{suffix}-images')
                         result['pages']=[base64.b64encode(p.read_bytes()).decode('ascii') for p in pages]
@@ -405,7 +406,11 @@ class Handler(SimpleHTTPRequestHandler):
                     result={"labelCount":label_count,"mxl":base64.b64encode(converted.read_bytes()).decode('ascii'),"pdf":None,"preview":None,"pages":[],"lines":[]}
                     if renderer:
                         stage_started=time.monotonic()
-                        rendered=out/(mxl.stem+f'-{suffix}.pdf'); render_pdf(converted,rendered)
+                        render_warnings=[]
+                        rendered=out/(mxl.stem+f'-{suffix}.pdf'); render_pdf(converted,rendered,warnings=render_warnings)
+                        if render_warnings:
+                            quality_assessment['warnings']=render_warnings+quality_assessment['warnings']
+                            quality_assessment['confidence']='low'
                         timings['pdfRendering']=round(time.monotonic()-stage_started,3)
                         result['pdf']=base64.b64encode(rendered.read_bytes()).decode('ascii')
                         stage_started=time.monotonic()

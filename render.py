@@ -1,6 +1,6 @@
 """Render converted MusicXML/MXL to PDF with MuseScore Studio."""
 from pathlib import Path
-import os, shutil, subprocess
+import logging, os, shutil, subprocess
 from PIL import Image
 
 def find_musescore():
@@ -12,12 +12,24 @@ def find_musescore():
         if item and Path(item).exists(): return str(Path(item))
     return None
 
-def render_pdf(source,destination,binary=None):
+def render_pdf(source,destination,binary=None,warnings=None):
     binary=binary or find_musescore()
     if not binary: raise RuntimeError('MuseScore Studio is not installed or MUSESCORE_BIN is not configured.')
     destination=Path(destination); destination.parent.mkdir(parents=True,exist_ok=True)
-    run=subprocess.run(['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-o',str(destination),str(source)],capture_output=True,text=True,timeout=180)
-    if run.returncode or not destination.exists(): raise RuntimeError('MuseScore could not render this score to PDF.')
+    command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-o',str(destination),str(source)]
+    run=subprocess.run(command,capture_output=True,text=True,timeout=180)
+    # MuseScore's converter error 1320 is reported as POSIX exit 40. A
+    # recognized score can fail its measure sanity check while remaining
+    # importable for review. Only retry when the caller can surface a warning.
+    if run.returncode == 40 and warnings is not None:
+        logging.warning('MuseScore rejected strict import; retrying for visual review (exit 40).')
+        destination.unlink(missing_ok=True)
+        run=subprocess.run(command[:5]+['-f']+command[5:],capture_output=True,text=True,timeout=180)
+        if run.returncode == 0 and destination.exists():
+            warnings.append('MuseScore required relaxed import to display this recognized score. Invalid measure durations may be present; rhythm and layout must be checked against the original. This preview is not a corrected score.')
+    if run.returncode or not destination.exists():
+        logging.error('MuseScore PDF rendering failed (exit %s):\n%s',run.returncode,((run.stderr or '')+'\n'+(run.stdout or '')).strip()[-6000:] or 'No diagnostic output')
+        raise RuntimeError('MuseScore could not render this score to PDF.')
     return destination
 
 def render_pages_and_lines(source,output_dir,dpi=90,line_dpi=180):
