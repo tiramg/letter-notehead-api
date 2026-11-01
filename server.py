@@ -8,6 +8,7 @@ import base64, hashlib, json, os, shutil, signal, subprocess, tempfile, threadin
 import urllib.error, urllib.request
 import xml.etree.ElementTree as ET
 from engrave import convert_mxl
+from cross_check import compare_scores
 from render import find_musescore, render_pdf, render_preview, render_pages_and_lines
 from photo_prep import prepare_photo
 
@@ -21,7 +22,7 @@ RECOGNITION_LOCK = threading.Lock()
 PROCESS_LOCK = threading.Lock()
 ACTIVE_PROCESSES = {}
 CACHE_DIR = Path(os.environ.get("LETTER_NOTEHEAD_CACHE_DIR", "/tmp/letter-notehead-cache"))
-CACHE_VERSION = "recognition-v6-pdf-sequential"
+CACHE_VERSION = "recognition-v7-crosscheck"
 CACHE_MAX_BYTES = 120 * 1024 * 1024
 CACHE_MAX_FILES = 4
 
@@ -196,6 +197,34 @@ def merge_mxl_pages(page_paths, destination):
         output_zip.writestr(score_name,ET.tostring(merged,encoding='utf-8',xml_declaration=True))
 
 
+def cross_check_pdf_pages(binary, page_sources, td_path, out, job_id, primary_mxl):
+    """Second, independent recognition pass over rasterized pages.
+
+    The PDF pass reads each page as a vector document; this pass reads a
+    300-DPI raster rendering of the same page, which makes different
+    binarization decisions. Measures whose pitch sets disagree between the
+    two passes are the ones a user should visually verify. Off by default
+    (LETTER_NOTEHEAD_CROSSCHECK=1 enables it) because it roughly doubles
+    recognition time and memory pressure on the small cloud instance.
+    """
+    raster_dir = td_path / 'raster-pages'; raster_dir.mkdir()
+    render = subprocess.run(['pdftoppm', '-png', '-r', '300', str(td_path / 'score.pdf'),
+                             str(raster_dir / 'page')], capture_output=True, text=True, timeout=120)
+    images = sorted(raster_dir.glob('page-*.png'), key=lambda p: int(p.stem.rsplit('-', 1)[-1]))
+    if render.returncode or not images:
+        return None
+    page_mxls = []
+    for index, image in enumerate(images, 1):
+        page_output = out / f'raster-{index}'; page_output.mkdir()
+        page_mxls.append(run_audiveris(binary, image, page_output, job_id, pdf_constants=False))
+    secondary = out / 'cross-check.mxl'
+    if len(page_mxls) == 1:
+        secondary = page_mxls[0]
+    else:
+        merge_mxl_pages(page_mxls, secondary)
+    return compare_scores(primary_mxl, secondary)
+
+
 def run_audiveris(binary, source, output, job_id, pdf_constants=False):
     command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-swap']
     if pdf_constants:
@@ -329,6 +358,8 @@ class Handler(SimpleHTTPRequestHandler):
             if quality not in {'fast','best'}: quality='fast'
             score_bytes=item.get_payload(decode=True)
             recognition_profile='pdf-optimized-350' if suffix == '.pdf' else quality
+            if suffix == '.pdf' and os.environ.get('LETTER_NOTEHEAD_CROSSCHECK') == '1':
+                recognition_profile += '+crosscheck'
             cached_path=cache_path(score_bytes,recognition_profile)
             cached=read_cached_result(cached_path)
             if cached is not None: return self.send_json(200,cached)
@@ -363,6 +394,14 @@ class Handler(SimpleHTTPRequestHandler):
                 data=parse_musicxml(mxl)
                 validation=validate_musicxml(mxl)
                 timings['scoreAnalysis']=round(time.monotonic()-stage_started,3)
+                if suffix == '.pdf' and os.environ.get('LETTER_NOTEHEAD_CROSSCHECK') == '1':
+                    try:
+                        stage_started=time.monotonic()
+                        cross=cross_check_pdf_pages(binary,page_sources,td_path,out,job_id,mxl)
+                        timings['crossCheck']=round(time.monotonic()-stage_started,3)
+                        if cross is not None: validation['crossCheck']=cross
+                    except Exception as exc:
+                        print(f'Cross-check warning: {exc}',flush=True)
                 title=Path(filename).stem.replace('_',' ').replace('-',' ').strip().title()
                 # Preserve the recognized system layout until the correction UI can safely reflow every score.
                 source_mxl=base64.b64encode(mxl.read_bytes()).decode('ascii')
@@ -394,7 +433,11 @@ class Handler(SimpleHTTPRequestHandler):
                 if data['noteCount'] < 8 or data['measureCount'] < 1:
                     quality_assessment['confidence'] = 'low'
                     quality_assessment['warnings'].insert(0, 'Recognition found too little musical content to trust this result.')
-            data.update({"fileName":filename,"engine":"Audiveris","recognitionMode":recognition_profile,"cacheHit":False,"reviewRequired":True,"qualityAssessment":quality_assessment,"validation":validation,"stageTimings":timings,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"sourceMxl":source_mxl,"learningModes":learning_modes,"issues":[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]})
+            issues=[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]
+            cross=validation.get('crossCheck') if isinstance(validation,dict) else None
+            if cross and cross.get('differingMeasures'):
+                issues=[{"measure":str(d['measureIndex']+1),"voice":"Cross-check","from":", ".join(d['onlyInSecondary']) or "—","to":", ".join(d['onlyInPrimary']) or "—","count":f"Two recognition passes disagree here ({d['primaryNoteCount']} vs {d['secondaryNoteCount']} notes); verify these pitches against the original"} for d in cross['differingMeasures'][:20]]
+            data.update({"fileName":filename,"engine":"Audiveris","recognitionMode":recognition_profile,"cacheHit":False,"reviewRequired":True,"qualityAssessment":quality_assessment,"validation":validation,"stageTimings":timings,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"sourceMxl":source_mxl,"learningModes":learning_modes,"issues":issues})
             write_cached_result(cached_path,data)
             return self.send_json(200,data)
         except subprocess.TimeoutExpired: return self.send_json(504,{"error":"Recognition took longer than eight minutes."})
