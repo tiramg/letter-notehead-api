@@ -120,6 +120,20 @@ def prepare_photo(source_bytes, suffix, directory, quality):
         warnings.append("The original photo has limited detail; move closer for the next photo.")
     if before["staffSpacing"] and before["staffSpacing"] < 8:
         warnings.append("Fine note details were enlarged before recognition; verify chords and ledger-line notes.")
+    # Angled-photo detector, calibrated 2026-11-01 against simulated photos of
+    # a 7-system piano page: a straight-on shot lets the row projection trace
+    # ~65 staff-line centers, while the same page photographed at an angle
+    # collapses to ~18, because slanted staff lines smear across rows. When a
+    # full-page photo traces this few lines, geometry -- not lighting -- is
+    # the problem, and no amount of contrast cleanup fixes it.
+    geometry_suspect = (
+        before["staffLineCount"] < 30
+        and max(original_size) >= 2000
+        and before["staffSpacing"] >= 4.5
+    )
+    if geometry_suspect:
+        confidence = "low"
+        warnings.insert(0, "The page looks photographed at an angle: staff lines could not be traced evenly across the page, so some systems may be missing or merged. Retake the photo straight-on with the page flat and filling the frame.")
     warnings.append("Photo recognition can misread dense chords, ledger lines, ties, and curved pages. Compare the result with the original.")
 
     target = Path(directory) / f"prepared-{quality}.png"
@@ -136,6 +150,7 @@ def prepare_photo(source_bytes, suffix, directory, quality):
         "staffSpacingBefore": before["staffSpacing"],
         "staffSpacingAfter": after["staffSpacing"],
         "staffLineCount": before["staffLineCount"],
+        "geometrySuspect": geometry_suspect,
         "scaleApplied": round(scale, 2),
     }
     return target.read_bytes(), ".png", metrics
