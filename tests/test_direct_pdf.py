@@ -8,6 +8,7 @@ from collections import Counter
 
 import fitz
 from direct_pdf import convert_pdf, inspect_pdf, UnsupportedPDF
+from benchmarks.compare_photo_reference import reference_notes
 from benchmarks.build_benchmark import build, staff, glyph
 
 FONT = Path(os.environ.get('LETTERSCORE_BENCHMARK_FONT', '/nonexistent'))
@@ -36,6 +37,11 @@ class DirectPDFTests(unittest.TestCase):
 
     def test_288_known_dense_chord_notes(self):
         self.assert_oracle(self.dense, self.dense_oracle)
+
+    def test_reference_measure_and_staff_mapping(self):
+        for source, oracle in [(self.simple,self.simple_oracle),(self.dense,self.dense_oracle)]:
+            expected=Counter((n['measure'],n['staff'],n['letter'],n['writtenOctave']) for n in oracle)
+            self.assertEqual(reference_notes(source),expected)
 
     def test_original_symbols_and_file_are_preserved(self):
         before = hashlib.sha256(self.simple.read_bytes()).digest()

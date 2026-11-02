@@ -52,3 +52,29 @@ No known-note benchmark yet certifies every note in the supplied Mrs Magic PDF.
 The font is Bravura by Steinberg, licensed under SIL OFL 1.1. Generated benchmark
 packages include that license. No user score or user score-derived fixture is
 committed to this repository.
+
+## Real-photo comparison with a supplied digital reference
+
+```
+python3 benchmarks/compare_photo_reference.py reference.pdf recognized.mxl --page 1
+```
+
+This diagnostic compares letter, written octave, measure index and staff against
+the semantic PDF. It requires paired piano staves with connected measure barlines
+and a single recognized piano part. Unsupported part grouping is reported rather
+than silently pooled. The reference's measure/staff assignment is tested against
+both original fixture oracles. Swapped measures/staves and duplicate extras have
+regression tests. Accidentals, rhythm, onset, voice and tie correctness are not
+included in this metric.
+
+A real photographed page was tested against its supplied digital reference:
+529 expected noteheads. Clean digital raster: 529 matching written pitches.
+Current Fast photo preprocessing: 211 matching notes out of 529 expected (279
+recognized). Current Best photo preprocessing: 369 matching notes out of 529
+expected (504 recognized). Matches require the correct measure and staff. Best
+still differed in every measure. OCR on/off did not change the Best result on
+this page. Enlarging toward 20/24px staff spacing did not improve it: 20px caused
+unsupported extra-part grouping; 24px matched 270 expected written pitches.
+These are diagnostics from one supplied screen photograph, not general accuracy
+figures. No preprocessing default is changed based on these unsuccessful trials.
+No user image, score-derived fixture or private recognition output is committed.
