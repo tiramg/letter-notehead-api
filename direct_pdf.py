@@ -8,6 +8,7 @@ original engraving; output letters denote written diatonic staff positions.
 from pathlib import Path
 import json
 import statistics
+import tempfile
 
 import fitz
 
@@ -129,7 +130,13 @@ def convert_pdf(source, destination):
                              fontname='hebo', fontsize=size,
                              color=(0,0,0) if hollow else (1,1,1), overlay=True)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        document.save(destination, garbage=4, deflate=True)
+        with tempfile.TemporaryDirectory(prefix='.direct-pdf-', dir=destination.parent) as td:
+            temporary = Path(td)/'output.pdf'
+            document.save(temporary, garbage=4, deflate=True)
+            with fitz.open(temporary) as check:
+                if len(check) != len(document):
+                    raise RuntimeError('Output PDF page count does not match the source.')
+            temporary.replace(destination)
     return plan
 
 
