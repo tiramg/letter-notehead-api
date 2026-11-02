@@ -22,7 +22,7 @@ RECOGNITION_LOCK = threading.Lock()
 PROCESS_LOCK = threading.Lock()
 ACTIVE_PROCESSES = {}
 CACHE_DIR = Path(os.environ.get("LETTER_NOTEHEAD_CACHE_DIR", "/tmp/letter-notehead-cache"))
-CACHE_VERSION = "recognition-v7-crosscheck"
+CACHE_VERSION = "recognition-v8-photo-crosscheck"
 CACHE_MAX_BYTES = 120 * 1024 * 1024
 CACHE_MAX_FILES = 4
 
@@ -225,6 +225,29 @@ def cross_check_pdf_pages(binary, page_sources, td_path, out, job_id, primary_mx
     return compare_scores(primary_mxl, secondary)
 
 
+def cross_check_photo(binary, score_bytes, suffix, td_path, out, job_id, quality, primary_mxl):
+    """Second recognition pass for a photo, using the other prep profile.
+
+    The 'fast' profile targets a 13px staff spacing and 'best' targets
+    16px; that difference alone makes Audiveris keep or drop different
+    notes from the same photo (verified on a real phone photo: 116 vs 117
+    notes, but only 4 of 15 measures identical). The primary result stays
+    the requested profile's; disagreements are reported through
+    validation.crossCheck and the issues list, same as the PDF pass.
+    """
+    other = 'best' if quality == 'fast' else 'fast'
+    alt_bytes, alt_suffix, _ = prepare_photo(score_bytes, suffix, td_path, other)
+    alt_source = td_path / ('score-alt' + alt_suffix)
+    alt_source.write_bytes(alt_bytes)
+    alt_out = out / 'alt-profile'
+    alt_out.mkdir()
+    alt_mxl = run_audiveris(binary, alt_source, alt_out, job_id, pdf_constants=False)
+    result = compare_scores(primary_mxl, alt_mxl)
+    result['primaryProfile'] = quality
+    result['secondaryProfile'] = other
+    return result
+
+
 def run_audiveris(binary, source, output, job_id, pdf_constants=False):
     command=['xvfb-run','-a','-s','-screen 0 1280x1024x24',binary,'-batch','-swap']
     if pdf_constants:
@@ -358,7 +381,7 @@ class Handler(SimpleHTTPRequestHandler):
             if quality not in {'fast','best'}: quality='fast'
             score_bytes=item.get_payload(decode=True)
             recognition_profile='pdf-optimized-350' if suffix == '.pdf' else quality
-            if suffix == '.pdf' and os.environ.get('LETTER_NOTEHEAD_CROSSCHECK') == '1':
+            if os.environ.get('LETTER_NOTEHEAD_CROSSCHECK') == '1':
                 recognition_profile += '+crosscheck'
             cached_path=cache_path(score_bytes,recognition_profile)
             cached=read_cached_result(cached_path)
@@ -402,6 +425,14 @@ class Handler(SimpleHTTPRequestHandler):
                         if cross is not None: validation['crossCheck']=cross
                     except Exception as exc:
                         print(f'Cross-check warning: {exc}',flush=True)
+                if suffix != '.pdf' and os.environ.get('LETTER_NOTEHEAD_CROSSCHECK') == '1':
+                    try:
+                        stage_started=time.monotonic()
+                        cross=cross_check_photo(binary,score_bytes,suffix,td_path,out,job_id,quality,mxl)
+                        timings['crossCheck']=round(time.monotonic()-stage_started,3)
+                        if cross is not None: validation['crossCheck']=cross
+                    except Exception as exc:
+                        print(f'Photo cross-check warning: {exc}',flush=True)
                 title=Path(filename).stem.replace('_',' ').replace('-',' ').strip().title()
                 # Preserve the recognized system layout until the correction UI can safely reflow every score.
                 source_mxl=base64.b64encode(mxl.read_bytes()).decode('ascii')

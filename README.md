@@ -12,16 +12,24 @@ The response includes score metadata and a `learningModes` object containing `al
 
 Uploads are processed inside a temporary directory and deleted immediately after the response is assembled. No score files are retained by the service.
 
-## Optional dual-pass cross-check (PDF uploads)
+## Optional dual-pass cross-check
 
 Set `LETTER_NOTEHEAD_CROSSCHECK=1` to run a second, independent recognition
-pass over a 300-DPI raster rendering of each PDF page and compare it with the
-primary vector-PDF pass measure by measure (`cross_check.py`). The primary
-result is unchanged; disagreements are reported in `validation.crossCheck`
-and as specific entries in `issues` naming the measure and the pitches only
-one pass found, so the user verifies a handful of measures instead of the
-whole score. It roughly doubles recognition time, so it is off by default on
-the memory-constrained cloud instance and best enabled for local/desktop
+pass and compare it with the primary result measure by measure
+(`cross_check.py`). The primary result is unchanged; disagreements are
+reported in `validation.crossCheck` and as specific entries in `issues`
+naming the measure and the pitches only one pass found, so the user
+verifies a handful of measures instead of the whole score.
+
+- For PDF uploads, the second pass recognizes a 300-DPI raster rendering
+  of each page instead of the vector document.
+- For photo uploads, the second pass runs the other preprocessing profile
+  (`fast` targets 13px staff spacing, `best` targets 16px). On a real
+  phone photo the two profiles returned 116 vs 117 notes but agreed on
+  only 4 of 15 measures, so per-measure flags matter more than totals.
+
+It roughly doubles recognition time, so it is off by default on the
+memory-constrained cloud instance and best enabled for local/desktop
 runs or a larger instance.
 
 ## Render deployment
