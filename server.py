@@ -22,7 +22,7 @@ RECOGNITION_LOCK = threading.Lock()
 PROCESS_LOCK = threading.Lock()
 ACTIVE_PROCESSES = {}
 CACHE_DIR = Path(os.environ.get("LETTER_NOTEHEAD_CACHE_DIR", "/tmp/letter-notehead-cache"))
-CACHE_VERSION = "recognition-v8-photo-crosscheck"
+CACHE_VERSION = "recognition-v9-event-crosscheck"
 CACHE_MAX_BYTES = 120 * 1024 * 1024
 CACHE_MAX_FILES = 4
 
@@ -115,9 +115,10 @@ def parse_musicxml(mxl_path):
     parts=[]; note_count=0; measure_numbers=set(); durations=[]
     for part in root.findall('part'):
         pdata={"id":part.attrib.get('id'),"measures":[]}
+        divisions=1
         for measure in part.findall('measure'):
             number=measure.attrib.get('number'); measure_numbers.add(number)
-            divisions=int(measure.findtext('attributes/divisions') or 1); notes=[]
+            divisions=int(measure.findtext('attributes/divisions') or divisions); notes=[]
             for n in measure.findall('note'):
                 if n.find('rest') is not None: continue
                 p=n.find('pitch')
@@ -467,7 +468,7 @@ class Handler(SimpleHTTPRequestHandler):
             issues=[{"measure":"—","voice":"Visual check","from":"?","to":"✓","count":"Compare pitches with the original"}]
             cross=validation.get('crossCheck') if isinstance(validation,dict) else None
             if cross and cross.get('differingMeasures'):
-                issues=[{"measure":str(d['measureIndex']+1),"voice":"Cross-check","from":", ".join(d['onlyInSecondary']) or "—","to":", ".join(d['onlyInPrimary']) or "—","count":f"Two recognition passes disagree here ({d['primaryNoteCount']} vs {d['secondaryNoteCount']} notes); verify these pitches against the original"} for d in cross['differingMeasures'][:20]]
+                issues=[{"measure":str(d['measureIndex']+1),"voice":"Cross-check","from":", ".join(d['onlyInSecondary']) or "—","to":", ".join(d['onlyInPrimary']) or "—","count":f"Two recognition passes disagree here ({d['primaryNoteCount']} vs {d['secondaryNoteCount']} notes); verify pitches, rhythm, rests, and staff placement against the original"} for d in cross['differingMeasures'][:20]]
             data.update({"fileName":filename,"engine":"Audiveris","recognitionMode":recognition_profile,"cacheHit":False,"reviewRequired":True,"qualityAssessment":quality_assessment,"validation":validation,"stageTimings":timings,"convertedNoteCount":primary['labelCount'],"letterNoteheadMxl":primary['mxl'],"letterNoteheadPdf":primary['pdf'],"sourceMxl":source_mxl,"learningModes":learning_modes,"issues":issues})
             write_cached_result(cached_path,data)
             return self.send_json(200,data)

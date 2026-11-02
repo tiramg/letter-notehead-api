@@ -1,0 +1,27 @@
+name: Regression checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m pip install -r requirements-benchmark.txt
+      - name: Fetch the benchmark music font and verify its checksum
+        run: |
+          curl -fL --retry 2 https://raw.githubusercontent.com/steinbergmedia/bravura/37b194378b710cc40e406ab6c4b07608bb9548ae/redist/otf/Bravura.otf -o /tmp/Bravura.otf
+          echo 'cdf0f893ee1fdb64b7f6713d71ee0dcfc349c0ac01429a8e451b01a9e79f5f3b  /tmp/Bravura.otf' | sha256sum -c -
+      - run: python -m unittest discover -s tests -v
+        env:
+          LETTERSCORE_BENCHMARK_FONT: /tmp/Bravura.otf
+      - run: node --check review.js
+      - run: node tests/test_review.cjs
