@@ -48,8 +48,11 @@ $('#cancelTest').onclick=async()=>{if(!jobId)return;const response=await fetch(`
 
 function pages(){return result?.learningModes?.all?.pages||[]}
 function showResult(){
+  $('#reviewComplete').checked=false;
+  const cross=result.validation?.crossCheck;
+  $('#crossCheckBox').textContent=cross?`Cross-check: ${cross.differingMeasureCount} of ${cross.measuresCompared} part-measures disagree. Agreement does not prove accuracy. Review pitches, rhythms, rests, and staff placement.`:'Cross-check was not performed. Visual review is required.';
   $('#workspace').hidden=false;$('#reviewPanel').hidden=false;$('#resultTitle').textContent=(result.fileName||file.name).replace(/\.[^.]+$/,'');
-  $('#statMode').textContent=result.recognitionMode==='pdf-optimized-350'?'Optimized PDF':mode==='best'?'Best Accuracy':'Fast';$('#statTime').textContent=formatTime(duration);$('#statNotes').textContent=result.noteCount??'—';
+  $('#statMode').textContent=result.recognitionMode?.startsWith('pdf-optimized-350')?'Optimized PDF':mode==='best'?'Best Accuracy':'Fast';$('#statTime').textContent=formatTime(duration);$('#statNotes').textContent=result.noteCount??'—';
   $('#statMeasures').textContent=result.measureCount??'—';$('#statSuspects').textContent=result.validation?.suspectMeasureCount??'—';
   const labels={preprocessing:'Preprocessing',recognition:'Recognition',scoreAnalysis:'Score check',letterConversion:'Letter conversion',pdfRendering:'PDF rendering',previewRendering:'Preview rendering',total:'Server total'};
   $('#stageTimings').innerHTML=Object.entries(result.stageTimings||{}).map(([key,value])=>`<span>${labels[key]||key}</span><strong>${Number(value).toFixed(1)}s</strong>`).join('');
@@ -77,14 +80,15 @@ function renderMarkers(){
   document.querySelectorAll('.marker').forEach(marker=>marker.onclick=event=>{event.stopPropagation();marks=marks.filter(mark=>String(mark.id)!==marker.dataset.id);renderMarkers();updateStats()});
 }
 function counts(){return Object.fromEntries(Object.keys(categories).map(key=>[key,marks.filter(mark=>mark.category===key).length]))}
-function accuracy(){const notes=Number(result?.noteCount)||0;return notes?Math.max(0,(1-marks.length/notes)*100):null}
+function accuracy(){if(!$('#reviewComplete').checked)return null;const notes=Number(result?.noteCount)||0;return notes?Math.max(0,(1-marks.length/notes)*100):null}
 function updateStats(){
   $('#statErrors').textContent=marks.length;const score=accuracy();$('#statAccuracy').textContent=score===null?'—':score.toFixed(1)+'%';
   const totals=counts();$('#breakdown').innerHTML=Object.entries(totals).filter(([,value])=>value).map(([key,value])=>`<span>${categories[key]}: ${value}</span>`).join('')||'<span>No errors marked yet</span>';
 }
-function report(){return {app:'LetterScore Test Lab',version:2,fileName:file?.name,sourceType:file?.type||'',recognitionMode:result?.recognitionMode||mode,processingMilliseconds:duration,processingTime:formatTime(duration),serverStageTimings:result?.stageTimings||null,rhythmCheck:result?.validation||null,recognizedNotes:result?.noteCount??null,recognizedMeasures:result?.measureCount??null,pages:pages().length,confidence:result?.qualityAssessment?.confidence||null,totalErrors:marks.length,estimatedNoteAccuracy:accuracy(),errorCounts:counts(),errors:marks,notes:$('#testNotes').value.trim(),testedAt:new Date().toISOString()}}
+$('#reviewComplete').onchange=updateStats;
+function report(){return {reviewComplete:$('#reviewComplete').checked,app:'LetterScore Test Lab',version:2,fileName:file?.name,sourceType:file?.type||'',recognitionMode:result?.recognitionMode||mode,processingMilliseconds:duration,processingTime:formatTime(duration),serverStageTimings:result?.stageTimings||null,rhythmCheck:result?.validation||null,recognizedNotes:result?.noteCount??null,recognizedMeasures:result?.measureCount??null,pages:pages().length,confidence:result?.qualityAssessment?.confidence||null,totalErrors:marks.length,estimatedNoteAccuracy:accuracy(),errorCounts:counts(),errors:marks,notes:$('#testNotes').value.trim(),testedAt:new Date().toISOString()}}
 $('#saveTest').onclick=()=>{if(!result)return;const history=JSON.parse(localStorage.getItem('letterScoreBenchmarks')||'[]');history.unshift(report());localStorage.setItem('letterScoreBenchmarks',JSON.stringify(history.slice(0,30)));renderHistory();toast('Test saved for comparison')};
 $('#exportReport').onclick=()=>{if(!result)return;const blob=new Blob([JSON.stringify(report(),null,2)],{type:'application/json'}),link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=`LetterScore-${mode}-${file.name.replace(/\.[^.]+$/,'')}-report.json`;link.click();URL.revokeObjectURL(link.href);toast('Report downloaded')};
-function renderHistory(){const history=JSON.parse(localStorage.getItem('letterScoreBenchmarks')||'[]'),body=$('#historyTable tbody');$('#historyEmpty').hidden=history.length>0;$('#historyTable').hidden=!history.length;body.innerHTML=history.map(test=>`<tr><td>${test.fileName||'Score'}</td><td>${test.recognitionMode==='pdf-optimized-350'?'Optimized PDF':test.recognitionMode==='best'?'Best':'Fast'}</td><td>${test.processingTime}</td><td>${test.totalErrors}</td><td>${test.estimatedNoteAccuracy==null?'—':test.estimatedNoteAccuracy.toFixed(1)+'%'}</td><td>${new Date(test.testedAt).toLocaleDateString()}</td></tr>`).join('')}
+function renderHistory(){const history=JSON.parse(localStorage.getItem('letterScoreBenchmarks')||'[]'),body=$('#historyTable tbody');$('#historyEmpty').hidden=history.length>0;$('#historyTable').hidden=!history.length;body.innerHTML=history.map(test=>`<tr><td>${test.fileName||'Score'}</td><td>${test.recognitionMode?.startsWith('pdf-optimized-350')?'Optimized PDF':test.recognitionMode==='best'?'Best':'Fast'}</td><td>${test.processingTime}</td><td>${test.totalErrors}</td><td>${!test.reviewComplete||test.estimatedNoteAccuracy==null?'—':test.estimatedNoteAccuracy.toFixed(1)+'%'}</td><td>${new Date(test.testedAt).toLocaleDateString()}</td></tr>`).join('')}
 $('#clearHistory').onclick=()=>{if(confirm('Clear all saved LetterScore benchmarks from this browser?')){localStorage.removeItem('letterScoreBenchmarks');renderHistory()}};
 renderHistory();
