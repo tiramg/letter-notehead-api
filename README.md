@@ -48,3 +48,10 @@ and Poppler (provided by the Docker image).
 The Test Lab reports a marked-error estimate only after every page has been
 reviewed. That estimate counts manually marked issues against recognized
 notes; it is not a measured pitch-accuracy benchmark.
+
+## Experimental direct digital-PDF route
+
+The controlled benchmark and `direct_pdf.py` can letter compatible semantic
+SMuFL PDFs without re-recognizing their notes. See [benchmark instructions](benchmarks/README.md)
+for known-note tests, reproduction, and limits. This is currently a CLI experiment;
+the Android and HTTP conversion paths still use Audiveris.
