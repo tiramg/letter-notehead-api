@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Family Movie Night</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,900&family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; font-family:'Inter',-apple-system,system-ui,sans-serif; color:#fdf6e9;
+    background: radial-gradient(1200px 600px at 50% -10%, #3b2d5c 0%, transparent 60%),
+                radial-gradient(900px 500px at 90% 10%, #7a2e35 0%, transparent 55%),
+                linear-gradient(180deg,#14101f 0%,#0d0a14 100%); min-height:100vh; }
+  .wrap { max-width:640px; margin:0 auto; padding:28px 18px 60px; }
+  header { text-align:center; padding:18px 0 8px; }
+  .marquee { font-size:26px; letter-spacing:6px; color:#ffc857; }
+  h1 { font-family:'Fraunces',serif; font-weight:900; font-size:44px; line-height:1.05; margin:10px 0 6px; }
+  .sub { color:#d9cdb4; font-size:16px; margin:0; }
+  .sub b { color:#ffc857; }
+  .addbar { display:flex; gap:10px; margin:26px 0 8px; }
+  .addbar input { flex:1; min-width:0; padding:16px 18px; font-size:17px; border-radius:16px; border:1px solid #ffffff2e;
+    background:#ffffff12; color:#fdf6e9; outline:none; }
+  .addbar input::placeholder { color:#a99f88; }
+  .addbar input:focus { border-color:#ffc857; background:#ffffff1c; }
+  .btn { border:0; cursor:pointer; font-weight:800; border-radius:16px; }
+  .addbtn { padding:16px 20px; font-size:16px; background:#ffc857; color:#231a04; }
+  .addbtn:active { transform:scale(.97); }
+  .hint { text-align:center; color:#8f8672; font-size:13px; margin:6px 0 20px; }
+  .card { display:flex; align-items:center; gap:14px; background:linear-gradient(180deg,#ffffff14,#ffffff08);
+    border:1px solid #ffffff1f; border-radius:20px; padding:18px 18px; margin:12px 0;
+    box-shadow:0 10px 30px #00000045; }
+  .rank { font-family:'Fraunces',serif; font-size:24px; font-weight:900; color:#ffc857; width:34px; text-align:center; flex:none; }
+  .title { flex:1; min-width:0; font-size:21px; font-weight:600; line-height:1.25; word-wrap:break-word; }
+  .top .title { font-size:24px; }
+  .top { border-color:#ffc85788; background:linear-gradient(180deg,#ffc85726,#ffffff08); }
+  .crown { font-size:15px; color:#ffc857; font-weight:800; letter-spacing:1px; }
+  .votes { text-align:center; flex:none; }
+  .vnum { font-family:'Fraunces',serif; font-size:28px; font-weight:900; line-height:1; }
+  .vlab { font-size:11px; color:#a99f88; letter-spacing:1px; }
+  .votebtn { flex:none; padding:14px 18px; font-size:16px; background:#e4572e; color:#fff; border-radius:14px;
+    box-shadow:0 6px 18px #e4572e55; }
+  .votebtn:active { transform:scale(.95); }
+  .smallbtns { display:flex; gap:14px; margin-top:8px; }
+  .linkbtn { background:none; border:0; color:#a99f88; font-size:13px; font-weight:600; cursor:pointer; padding:4px 0; }
+  .linkbtn:active { color:#fdf6e9; }
+  .watchedsec { margin-top:34px; }
+  .watchedsec h2 { font-size:14px; letter-spacing:2px; color:#8f8672; text-transform:uppercase; }
+  .wcard { opacity:.55; }
+  .wcard .title { text-decoration:line-through; }
+  .empty { text-align:center; color:#a99f88; padding:36px 10px; font-size:17px; line-height:1.5; }
+  .loading { text-align:center; color:#a99f88; padding:30px; }
+  footer { text-align:center; color:#6f675a; font-size:13px; margin-top:40px; line-height:1.6; }
+  @media (max-width:420px){ h1{font-size:36px} .title{font-size:19px} .votebtn{padding:13px 14px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="marquee">✦ ✦ ✦</div>
+    <h1>Family<br>Movie Night</h1>
+    <p class="sub">Sundays at <b>7 PM</b> · Downstairs, big screen</p>
+  </header>
+
+  <div class="addbar">
+    <input id="newTitle" type="text" placeholder="Add a movie title…" maxlength="120"
+      onkeydown="if(event.key==='Enter')addMovie()">
+    <button class="btn addbtn" onclick="addMovie()">Add</button>
+  </div>
+  <p class="hint">Tap <b>Vote</b> on the movies you want to watch. Most votes goes to the top.</p>
+
+  <div id="list"><div class="loading">Loading movies…</div></div>
+  <div id="watched"></div>
+
+  <footer>Be there if you can — and if you can't,<br>we'll do it again next Sunday. 🍿</footer>
+</div>
+
+<script>
+  var movies = [];
+  function esc(s){ return s.replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function render(data){
+    movies = data || [];
+    var active = movies.filter(function(m){return !m.watched;});
+    var watched = movies.filter(function(m){return m.watched;});
+    active.sort(function(a,b){ return b.votes - a.votes; });
+    var h = '';
+    if (!active.length) h = '<div class="empty">No movies yet.<br>Add the first title above! 🎬</div>';
+    active.forEach(function(m, i){
+      h += '<div class="card' + (i===0 && m.votes>0 ? ' top' : '') + '">'
+        + '<div class="rank">' + (i+1) + '</div>'
+        + '<div style="flex:1;min-width:0"><div class="title">' + esc(m.title) + '</div>'
+        + (i===0 && m.votes>0 ? '<div class="crown">★ TOP PICK</div>' : '')
+        + '<div class="smallbtns"><button class="linkbtn" onclick="setWatched(' + m.row + ',true)">✓ Watched it</button></div></div>'
+        + '<div class="votes"><div class="vnum">' + m.votes + '</div><div class="vlab">VOTES</div></div>'
+        + '<button class="btn votebtn" onclick="vote(' + m.row + ',this)">Vote</button>'
+        + '</div>';
+    });
+    document.getElementById('list').innerHTML = h;
+    var w = '';
+    if (watched.length){
+      w = '<div class="watchedsec"><h2>Watched</h2>';
+      watched.forEach(function(m){
+        w += '<div class="card wcard"><div style="flex:1;min-width:0"><div class="title">' + esc(m.title) + '</div>'
+          + '<div class="smallbtns"><button class="linkbtn" onclick="setWatched(' + m.row + ',false)">↩ Put it back</button>'
+          + '<button class="linkbtn" onclick="del(' + m.row + ',this)">🗑 Delete</button></div></div>'
+          + '<div class="votes"><div class="vnum">' + m.votes + '</div><div class="vlab">VOTES</div></div></div>';
+      });
+      w += '</div>';
+    }
+    document.getElementById('watched').innerHTML = w;
+  }
+  function api(path, payload){
+    var opts = payload
+      ? { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) }
+      : {};
+    fetch(path, opts)
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d && d.ok) render(d.movies);
+        else { document.querySelector('.hint').textContent = 'Something went wrong — try again.'; load(); }
+      })
+      .catch(function(){ document.querySelector('.hint').textContent = 'Something went wrong — try again.'; load(); });
+  }
+  function load(){ api('api/movies'); }
+  function addMovie(){
+    var el = document.getElementById('newTitle');
+    var t = el.value.trim(); if(!t) return;
+    el.value='';
+    api('api/add', { title: t });
+  }
+  function vote(row, btn){ if(btn) btn.textContent='\u2713'; api('api/vote', { row: row }); }
+  function setWatched(row, w){ api('api/watched', { row: row, watched: w }); }
+  function del(row, btn){
+    // Two-tap delete: first tap arms the button, second tap within 3 seconds deletes.
+    if (btn && btn.dataset.armed) { api('api/delete', { row: row }); return; }
+    if (btn) {
+      btn.dataset.armed = '1';
+      btn.textContent = '\u26a0 Tap again to delete';
+      btn.style.color = '#e4572e';
+      setTimeout(function(){ if(btn.isConnected){ delete btn.dataset.armed; btn.textContent = '🗑 Delete'; btn.style.color = ''; } }, 3000);
+    } else { api('api/delete', { row: row }); }
+  }
+  load();
+  setInterval(load, 20000);
+</script>
+</body>
+</html>

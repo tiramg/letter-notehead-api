@@ -11,6 +11,7 @@ from engrave import convert_mxl
 from cross_check import compare_scores
 from render import find_musescore, render_pdf, render_preview, render_pages_and_lines
 from photo_prep import prepare_photo
+from movienight import list_movies as mn_list, add_movie as mn_add, vote_movie as mn_vote, set_watched as mn_watched, delete_movie as mn_delete
 
 ROOT = Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", os.environ.get("LETTER_NOTEHEAD_PORT", "10000")))
@@ -311,6 +312,11 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(200,job)
         if path in {'/','/health','/api/status'}:
             binary=find_audiveris(); renderer=find_musescore(); return self.send_json(200,{"ready":bool(binary),"engine":"Audiveris","configuredPath":binary,"pdfReady":bool(renderer),"renderer":"MuseScore Studio","rendererPath":renderer})
+        if path == '/movienight':
+            body=(ROOT/'movienight.html').read_bytes(); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Cache-Control','no-store'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); return
+        if path == '/movienight/api/movies':
+            try: return self.send_json(200,mn_list())
+            except Exception as exc: return self.send_json(502,{"ok":False,"error":str(exc)})
         return self.send_json(404,{"error":"Not found"})
     def do_POST(self):
         path=urlparse(self.path).path
@@ -362,6 +368,16 @@ class Handler(SimpleHTTPRequestHandler):
                         result['preview']=result['pages'][0] if result['pages'] else None
                 return self.send_json(200,result)
             except Exception as exc: return self.send_json(400,{"error":str(exc)})
+        if path in {'/movienight/api/add','/movienight/api/vote','/movienight/api/watched','/movienight/api/delete'}:
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                payload=json.loads(self.rfile.read(length).decode('utf-8')) if length>0 else {}
+                if path.endswith('/add'): result=mn_add(str(payload.get('title','')))
+                elif path.endswith('/vote'): result=mn_vote(int(payload.get('row')))
+                elif path.endswith('/watched'): result=mn_watched(int(payload.get('row')),bool(payload.get('watched')))
+                else: result=mn_delete(int(payload.get('row')))
+                return self.send_json(200,result)
+            except Exception as exc: return self.send_json(502,{"ok":False,"error":str(exc)})
         if path != '/api/recognize': return self.send_json(404,{"error":"Not found"})
         if not self.authorized(): return self.send_json(401,{"error":"Unauthorized"})
         binary=find_audiveris()
